@@ -1,0 +1,19 @@
+{
+  "name": "dsh-browser-service",
+  "version": "0.1.0",
+  "description": "自建 DSH 浏览器服务：单例 CDP 守护进程 + DSH ctx.browser provider + 兼容 dsh-univer-office 的可执行包装",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22.19" },
+  "bin": { "browsersvc": "bin/browsersvc.mjs" },
+  "files": ["bin", "src", "scripts", "README.md"],
+  "scripts": {
+    "start": "node bin/browsersvc.mjs start",
+    "stop": "node bin/browsersvc.mjs stop",
+    "status": "node bin/browsersvc.mjs status",
+    "detect": "node bin/browsersvc.mjs detect",
+    "verify": "node scripts/verify-daemon.mjs",
+    "test": "node scripts/verify-daemon.mjs"
+  }
+}
