@@ -1,6 +1,6 @@
 # dsh-browser-cdp
 
-DSH（DeepSeek Harness）的浏览器 provider 插件：把内核接到**自建的单例 CDP 浏览器服务**（[`dsh-browser-service`](../README.md) 的 `browsersvc`），**复用内置 `dsh-builtin-browser/tool-browser` 的 32 个 `browser_*` 工具**——插件本身不注册任何工具。
+DSH（DeepSeek Harness）的浏览器 provider 插件：把内核接到**自建的单例 CDP 浏览器服务**（[`dsh-browser-service`](../README.md) 的 `browsersvc`），**复用内置 `dsh-builtin-browser/tool-browser` 的 33 个 `browser_*` 工具**——插件本身不注册任何工具。
 
 ```
 browser_* 工具（内置 tool-browser）
