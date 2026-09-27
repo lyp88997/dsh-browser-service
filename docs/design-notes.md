@@ -70,8 +70,8 @@ Playwright connectOverCDP("http://127.0.0.1:9333")
 
 | 里程碑 | 内容 | 验收（可执行） |
 |---|---|---|
-| M1 | `browsersvc` 守护 + 监管 | `curl 127.0.0.1:<port>/json/version` = Protocol-Version 1.3；两个上下文 cookie 互不可见；kill 后自动重启 |
-| M2 | `browser-cdp` provider 插件（自写）+ 关掉 `browser-electron`，保留 `tool-browser` | 33 个 `browser_*` 工具在守护进程上跑通（含截图、多标签、表单） |
+| 守护进程 | `browsersvc` 守护 + 监管 | `curl 127.0.0.1:<port>/json/version` = Protocol-Version 1.3；两个上下文 cookie 互不可见；kill 后自动重启 |
+| provider | `browser-cdp` provider 插件（自写）+ 关掉 `browser-electron`，保留 `tool-browser` | 33 个 `browser_*` 工具在守护进程上跑通（含截图、多标签、表单） |
 | M3 | univer 指向包装脚本（现状） | `univer_screenshot` 出图；打印 PDF 出文件 |
 | M4（可选） | 给服务加通用 HTTP 面：`/fetch`、`/screenshot`、`/eval`（Moli 风格） | 任何插件不需要懂 CDP 也能用 |
 | M5（进阶） | CDP-over-pipe 代理，让 univer 复用守护进程 | univer 渲染时不再新增浏览器进程 |

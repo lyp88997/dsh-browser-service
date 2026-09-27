@@ -23,19 +23,7 @@ browser_* 工具（33 个，来自依赖 dsh-builtin-browser 的 tool-browser）
 
 ## 配置
 
-| 键 | 默认 | 说明 |
-| --- | --- | --- |
-| `providerId` | `cdp-daemon` | seam 里注册的 provider 名，要和 patch 里 `browser.browserProvider` 一致 |
-| `cdpUrl` | `http://127.0.0.1:9333` | browsersvc 的公开（回环）端点 |
-| `connectTimeoutMs` | `30000` | 连 CDP / 首次用浏览器时等守护进程起来的超时 |
-| `actionTimeoutMs` / `navigationTimeoutMs` / `lookupTimeoutMs` | `15000` / `30000` / `5000` | 单次动作 / 导航 / 找元素超时 |
-| `snapshotMaxElements` | `200` | `browser_snapshot` 返回的元素上限 |
-| `contentMaxChars` | `200000` | `browser_content` 截断长度 |
-| `viewportWidth` / `viewportHeight` | `1440` / `900` | 新页面视口 |
-| `autoStartCommand` | 空 = 用**本包自带**的 `bin/browsersvc.mjs start` | 可选：首次用浏览器时执行的命令；换端口/内核才需要填 |
-| `autoStartTimeoutMs` | `60000` | `autoStartCommand` 的执行超时 |
-| `cdpToken` | 空 | 一般不用填：留空时自动读 `<DSH_BROWSER_SVC_ROOT 或 $DSH_HOME/browser-service>/service.json` 里的 `token`（每次 attach 重读，守护进程重启换 token 也能跟上）。只有指向自建/非 browsersvc 的 CDP 端点时才需要显式给 |
-| `downloadDir` | 空 | 填了就要求 `browser_screenshot` / `browser_download` 的 `savePath` 落在该目录内（未填则只强制「绝对路径 + 不覆盖已有文件」） |
+配置表的权威位置是**根 README 的「配置」一节**（npm 页面只渲染根 README）；键与默认值的权威定义是 `lib/index.js` 的 `Config`（schemastery schema）。改默认值必须**同时**改 schema 与根 README 的配置表——本文件不再复制那张表，以免再出现「文档写 `30000`、代码是 `10000`」这类漂移。
 
 所有键都可写在 profile patch 的 `config:` 下（patch **整行替换** `config`，覆盖时要重述该行需要的每个键）。
 

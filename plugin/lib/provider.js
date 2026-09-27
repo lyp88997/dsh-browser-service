@@ -2,7 +2,7 @@
  * CDP 版 BrowserProvider：把 DSH 的 browser seam 接到常驻的 browsersvc（M1 守护进程）
  * 或多实例 chrome-headless-shell 上，用 playwright-core 的 connectOverCDP 消费。
  *
- * 设计约束（来自 seam 契约，见 docs/feasibility.md §类型面）：
+ * 设计约束（来自 seam 契约，见 docs/design-notes.md §类型面）：
  * - `open()` 自己铸造字符串 session id；
  * - `available()` 必须廉价且不发网络请求；
  * - 元素定位语义 css / text / xpath，text 为「精确优先 → 包含，深层优先」；
