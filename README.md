@@ -4,7 +4,9 @@
 
 面向**无 root、无 GUI、host 网络**的服务器容器（本机就是这种：Debian 12 / uid 1000 / cgroup 只读 / `/dev/shm` 64M / 无 Xvfb）。
 
-> 状态：**M1 已完成并验收通过**（守护进程 + 回环代理 + 空闲回收 + 崩溃重启）。**M2 已完成并验收通过**（`ctx.browser` provider 接进内置 `browser_*` 工具面，见 §3.3 与 `docs/provider-m2.md`）。
+> 状态：**M1 已完成并验收通过**（守护进程 + 回环代理 + 空闲回收 + 崩溃重启）。**M2 已完成并验收通过**（`ctx.browser` provider 接进内置 `browser_*` 工具面，见 §3 与 `docs/provider-m2.md`）。
+>
+> **v0.4.0 起只有一个交付物**：`dsh-browser-service` 这一个包既是 DSH 组合包（bundle），也是守护进程 CLI 与 provider——`dsh plugin --profile <name> add <本包>` **一次装完就能用**（接缝 `browser`、33 个 `browser_*` 工具、`cdp-daemon` provider 都由它挂出），不再需要先装第三方接缝包 `dsh-builtin-browser`。
 
 ## 1. 它解决什么问题
 
@@ -21,22 +23,24 @@
                     ┌──────────────── 127.0.0.1:<公开端口> ────────────────┐
 客户端（DSH provider /                     │                                  │
  playwrigh/puppeteer / curl）──────────────┤  回环 TCP 代理（本进程）          │
-                                          │   · 连接计数 → 空闲回收           │
-                                          │   · Bearer token 凭据门            │
-                                          │   · 路径白名单 / 改写 ws 地址       │
-                                          └──────────────┬───────────────────┘
+                                           │   · 连接计数 → 空闲回收           │
+                                           │   · Bearer token 凭据门            │
+                                           │   · 路径白名单 / 改写 ws 地址       │
+                                           └──────────────┬───────────────────┘
                                                          │ 127.0.0.1:<内部端口>
-                                          ┌──────────────▼───────────────────┐
-                                          │ chrome-headless-shell / wrapper  │
-                                          │  · 只绑回环                       │
-                                          │  · 崩溃 → supervisor 重启         │
-                                          └──────────────────────────────────┘
+                                           ┌──────────────▼───────────────────┐
+                                           │ chrome-headless-shell / wrapper  │
+                                           │  · 只绑回环                       │
+                                           │  · 崩溃 → supervisor 重启         │
+                                           └──────────────────────────────────┘
 ```
 
 - 守护进程（`browsersvc run`）负责：spawn 内核 → 等 CDP 就绪 → 起代理 → 写状态文件 → 空闲自杀 / 崩溃重启。
-- 状态文件 `$ROOT/service.json`（0600）只有 pid / 端口 / 内核 / 版本，**不含任何凭据**。
+- 状态文件 `$ROOT/service.json`（0600）：pid / 端口 / 内核 / 版本 / 本次启动的访问 token（同 uid 可读，故 0600）。
 
 ## 3. 快速开始
+
+### 3.1 起守护进程
 
 ```bash
 # 1) 看本机能用哪个内核（会依次看环境变量、常见落点、PATH）
@@ -47,7 +51,8 @@ node bin/browsersvc.mjs start --port=9333 --idle-ms=900000
 
 # 3) 验证
 node bin/browsersvc.mjs status
-curl -s 127.0.0.1:9333/json/version
+TOKEN=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.DSH_HOME+"/browser-service/service.json","utf8")).token')
+curl -s -H "Authorization: Bearer $TOKEN" 127.0.0.1:9333/json/version
 
 # 4) 停
 node bin/browsersvc.mjs stop
@@ -63,7 +68,7 @@ node bin/browsersvc.mjs start \
 
 `--wrapper` 指向的包装脚本负责注入 `LD_LIBRARY_PATH`（用户态 43 个包）、`FONTCONFIG_FILE`（中文渲染）、并追加 `--no-sandbox --disable-dev-shm-usage`。没有包装脚本时，用 `--kernel=/path/to/chrome-headless-shell` 直接指定内核，但**必须**保证系统库与字体可用（否则截图纯白、中文变方块）。
 
-### 给 `dsh-univer-office` 用
+### 3.2 给 `dsh-univer-office` 用
 
 ```yaml
 - id: univer
@@ -73,37 +78,30 @@ node bin/browsersvc.mjs start \
 
 保持现状即可：univer 用同一份二进制与库，自己起临时实例（它没有 `connectOverCDP` 能力，见 `docs/feasibility.md`）。
 
-### 给 DSH 的 `browser_*` 工具用（M2）
+### 3.3 给 DSH 的 `browser_*` 工具用（M2）
 
-把 M1 的守护进程接进 DSH 的 browser seam：本包只注册 provider，工具面沿用内置 `tool-browser` 的 33 个 `browser_*` 工具。
-
-**一条命令装完**（下载守护进程工具包 → 起服务 → 装组合包；版本号按 [Releases](https://github.com/lyp88997/dsh-browser-service/releases) 最新的改，`--profile` 换成目标 profile）：
+**一条命令装完**（`--profile` 换成目标 profile；从 [Releases](https://github.com/lyp88997/dsh-browser-service/releases) 下载或直接用下面的 URL）：
 
 ```bash
-mkdir -p ~/dsh-browser-service && \
-  curl -sL https://github.com/lyp88997/dsh-browser-service/releases/download/v0.3.3/dsh-browser-service-0.3.3.tgz | tar xz -C ~/dsh-browser-service --strip-components=1 && \
-  { node ~/dsh-browser-service/bin/browsersvc.mjs status >/dev/null 2>&1 || node ~/dsh-browser-service/bin/browsersvc.mjs start; } && \
-  dsh plugin --profile web add dsh-builtin-browser && \
-  dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.3.3/dsh-browser-cdp-0.3.3.tgz
-# 然后重启 DSH；校验（应出现 browserProvider: cdp-daemon 与 "patched by dsh-browser-cdp"，且没有 not found）：
-#   dsh --profile web --dump-config | grep -E 'browserProvider|patched by|not found'
+dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.4.0/dsh-browser-service-0.4.0.tgz
+# 然后重启 DSH；校验（应出现 browserProvider: cdp-daemon 与本包层，且本包三行没有 not found）：
+#   dsh --profile web --dump-config | grep -E 'browserProvider|# == dsh-browser-service|not found'
 ```
 
-- 这一行**可以重复执行**：`status` 说守护进程已在跑就跳过 `start`；`add` 装过的包 pnpm 会直接跳过（实测连跑两次都 exit 0，`dsh.profile.bundles` 不会出现重复层）。
-- 内核由 `browsersvc start` 自动探测（同 `detect` 的候选顺序）；探测不到就补 `--wrapper=/path/to/wrapper.sh` 或 `--kernel=/path/to/chrome`。
-- **必须是两次 `add` 用 `&&` 串起来**，不能写成一条 `add dsh-builtin-browser <本包>`：pnpm 会排序依赖键，`dsh.profile.bundles` 里本包会排到 seam 前面 ⇒ 只打印两次 `patch: entry "browser"/"browser-electron" not found` 并静默失效。实测：单条 add → `bundles: [base, dsh-browser-cdp, dsh-builtin-browser]` + 两次 not found；`&&` 串联 → `bundles: [base, dsh-builtin-browser, dsh-browser-cdp]` + `patched by dsh-browser-cdp`。
-- **本包不能按裸包名装**：npm 上的 `dsh-browser-cdp` 是别人的同名包（0.17.4），只能用 tarball / Release 资产 URL。第 1 步的 `dsh-builtin-browser` 才是 npm 上我们的真包（它提供 seam 与工具面）。
-- 第 1 步会顺带装上 `electron` 包（seam 包的硬依赖），但 pnpm ≥10 默认用 profile 的 `allowBuilds` 拦下它的 postinstall、不下载二进制——本包不走 electron，拦下正好（本机 profile 就是这样：有 `electron/` 目录、没有 `electron/dist/electron`）。
-- 组合自动做四件事：插入 `browser-cdp`、seam 选 `cdp-daemon`、关掉内置 `browser-electron`、关掉 `dsh-playwright-browser`（它自带 10 个与内置**同名**的 `browser_*` 工具，两个 provider 的工具面不能共存）。
-- `browsersvc` 默认空闲 15 分钟自杀（`--idle-ms`，上限 24 小时）。想让它在死后自动回来，就给 profile patch 里的 insert 行补 `autoStartCommand`（patch 是**整行替换** `config`，所以要重述 `cdpUrl`）：
+- **只装这一个包**：接缝 `browser`、33 个 `browser_*` 工具（`id: tool-browser`）与 `cdp-daemon` provider 都由本包挂出。工具面与接缝来自本包的依赖 `dsh-builtin-browser`，经本包的 `./browser` / `./tool-browser` 转出口暴露（`plugin/shims/`）——所以**不要再单独装 `dsh-builtin-browser`**：它若同时是组合包，`browser`/`tool-browser` 两个 id 会被插两次、33 个工具重名挂两遍。已经装过就先 `dsh plugin --profile <name> remove dsh-builtin-browser`。
+- **可以重复执行**：装过的包 pnpm 直接跳过，`dsh.profile.bundles` 不会出现重复层。
+- **不需要配置 `autoStartCommand`**：端点不通时插件默认用**本包自带的** `bin/browsersvc.mjs start` 拉起一次（`plugin/lib/provider.js` 的 `defaultAutoStartCommand()`）。想换端口/内核，再在 profile 的 `cordis.patch.yml` 里覆盖（patch 是**整行替换** `config`，要重述 `cdpUrl`）：
 
 ```yaml
 - id: browser-cdp
-  name: dsh-browser-cdp
   config:
     cdpUrl: http://127.0.0.1:9333
-    autoStartCommand: node /home/you/dsh-browser-service/bin/browsersvc.mjs start
+    autoStartCommand: node /home/you/dsh-browser-service/bin/browsersvc.mjs start --port=9333
 ```
+
+- **不能写裸包名 `dsh-browser-cdp`**（v0.4.0 之前子包的名字）：npm 上的 `dsh-browser-cdp` 是别人的同名包（0.17.4）。本包统一叫 `dsh-browser-service`，当前用 tarball / Release 资产 URL 安装（npm 上这个名字还空着，见 §8）。
+- 组合自动做四件事：插入接缝 `browser`（选 `cdp-daemon`）、插入 `tool-browser`、插入 `browser-cdp` provider、关掉内置 `browser-electron` 与 `dsh-playwright-browser`（后者自带 10 个与内置**同名**的 `browser_*` 工具，两个 provider 的工具面不能共存）。后两个 id 在本包单独安装的环境里不存在，loader 只打印一条 not found 提示，不影响组合。
+- `browsersvc` 默认空闲 15 分钟自杀（`--idle-ms`，上限 24 小时）；DSH 侧仍在的话，下次调用浏览器会自动把它拉回来（F25）。
 
 > ⚠️ 改完**必须重启 DSH**（插件在 boot 时 import，热重载不可靠）：运行中的完整 web profile 上 `patchReload: live` 会静默回滚（进程 stdout 归 docker，看不到报错），干净进程里 boot 完全正常。
 >
@@ -115,25 +113,25 @@ mkdir -p ~/dsh-browser-service && \
 |---|---|
 | `detect` | 打印候选内核与已解析配置 |
 | `start` | 后台拉起守护进程并等到 CDP 就绪（已运行且健康则直接返回） |
-| `stop` | 先停 supervisor，再兜底清理浏览器进程与状态文件 |
+| `stop` | 先停 supervisor，再兜底清理浏览器进程与状态文件（动手前校验 pid 身份，`--force` 跳过） |
 | `status` | 打印状态；**健康退出码 0，未运行 1**（便于脚本判断） |
 | `restart` | stop + start |
 | `run` | 前台运行（`start` 内部用它做后台进程） |
 | `logs [--lines=60]` | 打印日志尾部 |
 
-参数：`--root` `--port`（0 = 自动择取）`--idle-ms` `--kernel` `--wrapper` `--user-data-dir` `--max-restarts`，对应环境变量 `DSH_BROWSER_SVC_ROOT` / `DSH_BROWSER_SVC_PORT` / `DSH_BROWSER_SVC_IDLE_MS` / `DSH_BROWSER_CHROME` / `DSH_BROWSER_WRAPPER`，也可写进 `$ROOT/config.json`。优先级：**CLI > 环境变量 > config.json > 自动探测**。
+参数：`--root` `--port`（0 = 自动择取）`--idle-ms` `--kernel` `--wrapper` `--user-data-dir` `--max-restarts` `--start-timeout` `--internal-port-base`，对应环境变量 `DSH_BROWSER_SVC_ROOT` / `DSH_BROWSER_SVC_PORT` / `DSH_BROWSER_SVC_IDLE_MS` / `DSH_BROWSER_CHROME` / `DSH_BROWSER_WRAPPER`，也可写进 `$ROOT/config.json`。优先级：**CLI > 环境变量 > config.json > 自动探测**。
 
 ## 5. 验收（零依赖，不依赖外网）
 
 ```bash
-node scripts/verify-daemon.mjs      # M1 守护进程：31/31
-node scripts/verify-provider.mjs    # M2 provider：86 通过，0 失败
-node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）：16/16
+node scripts/verify-daemon.mjs      # M1 守护进程 + CLI 防御：32/32
+node scripts/verify-provider.mjs    # M2 provider：88 通过，0 失败
+node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）：23/23
 ```
 
-`verify-bundle.mjs` 在一次性隔离 `DSH_HOME`（`/tmp`）里真实执行官方安装/移除命令，并断言组合层顺序规则：`add <tgz>` 追加依赖与层 → seam 包缺席时 `patch: entry "browser" not found` → 正确顺序（seam → 本包）三条 patch 行全部生效（`browserProvider: cdp-daemon`、`browser-electron: disabled`）→ 装反顺序只警告、覆盖行被静默丢弃 → `remove` 同时清掉依赖与层。不碰默认 profile。
+`verify-bundle.mjs` 在一次性隔离 `DSH_HOME`（`/tmp`）里真实执行官方安装/移除命令：交付物里只有一个包 → `add <tgz>` 追加依赖与层 → `--dump-config` 里本包层挂出 `browser`（`browserProvider: cdp-daemon`）、`tool-browser` 与 `browser-cdp`，且**三行都没有 not found** → 默认自启命令指向装进来的 `bin/browsersvc.mjs` → `./browser` / `./tool-browser` 转出口的导出键与 `dsh-builtin-browser` 源模块**完全一致** → `remove` 同时清掉依赖与层。不碰默认 profile。
 
-`verify-provider.mjs` 自己起本地站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖 session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back`/`forward`/`reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`。
+`verify-provider.mjs` 自己起本地站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖 session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back`/`forward`/`reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`、连接被换掉后会话复活（F22）、自启开关复位（F25）、保存路径准入、代理对截断。
 
 `verify-daemon.mjs` 只用 Node 内置能力（`fetch` / `WebSocket` / `http`），自己起本地源，逐项检查：
 
@@ -157,6 +155,7 @@ PASS  退出后清理状态文件
 PASS  退出后端口释放
 PASS  越界 --port 被配置校验拒绝 (exit 2)
 PASS  --lines=0 被拒 (exit 2)
+PASS  --internal-port-base 覆盖默认 9300  — internalPort=19700
 PASS  内核不存在时启动失败且不留状态文件  — code=2
 PASS  内核不可执行时启动失败且不留状态文件  — code=2
 PASS  内核未就绪时启动失败（不静默成功）  — code=2
@@ -169,7 +168,20 @@ PASS  restart 真的停旧起新（F23）  — code=0
 PASS  restart 后 token 换新  — e033d630 → 8efe1748
 PASS  restart 后的实例可正常 stop  — code=0
 
-31/31 通过
+32/32 通过
+```
+
+另有一条**真实的 DSH 内端到端**证明（不属于自动验收，手动跑）：在隔离 `DSH_HOME` 里建一个 web 模板 profile → `dsh plugin add` 本包 → 重启该实例，`tools/seam-probe` 会通过 `ctx.browser` 跑完 open → openUrl → snapshot → content → execute → a11y → listTabs → close，日志落在 `/tmp/m2-seam-probe.log`：
+
+```
+apply entered
+open -> "s1"
+snapshot -> url=http://127.0.0.1:9413/ title="M2 夹具" elements=0 first=undefined
+content -> "接缝端到端\n\nhi"
+execute -> {"ok":true,"value":"接缝端到端"}
+a11y -> count=1 nodes=1
+listTabs -> [{"id":"t1","url":"http://127.0.0.1:9413/","title":"M2 夹具","active":true}]
+closed -> DONE
 ```
 
 ## 6. 安全约束（不要动）
@@ -186,9 +198,10 @@ PASS  restart 后的实例可正常 stop  — code=0
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| **M1** | 守护进程 + 回环代理 + 空闲回收 + 崩溃重启 + 31 项验收 | ✅ 完成 |
-| **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerBrowserProvider`），复用内置 `tool-browser` 的 33 个 `browser_*` 工具；同时 `disabled: true` 掉 `browser-electron` 与 `dsh-playwright-browser` | ✅ 完成（86 项 + DSH 内端到端，见 `docs/provider-m2.md`） |
-| **M6** | 代码审查 18 条缺陷修复：公开端口凭据门、启动失败不留孤儿、stop 身份校验、保存路径准入、并发握手/连接计数、代理对截断…（见 §9–§12） | ✅ 完成（v0.3.0 / v0.3.1 / v0.3.2 / v0.3.3） |
+| **M1** | 守护进程 + 回环代理 + 空闲回收 + 崩溃重启 + 32 项验收 | ✅ 完成 |
+| **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerBrowserProvider`），复用接缝包的 33 个 `browser_*` 工具；同时 `disabled: true` 掉 `browser-electron` 与 `dsh-playwright-browser` | ✅ 完成（88 项 + DSH 内端到端，见 `docs/provider-m2.md`） |
+| **M6** | 代码审查 18 条缺陷修复：公开端口凭据门、启动失败不留孤儿、stop 身份校验、保存路径准入、并发握手/连接计数、代理对截断…（见 §9–§12） | ✅ 完成（v0.3.0 → v0.3.3） |
+| **M7** | 「一个包装完」：把工具包与插件子包合成单一交付物 `dsh-browser-service`，接缝与工具面由依赖 `dsh-builtin-browser` 转出 | ✅ 完成（v0.4.0，见 §13） |
 | **M3** | univer 侧接线（保持包装脚本形态） | 已有可行做法 |
 | **M4** | 面向"任何插件"的通用 HTTP 面：`/fetch` `/screenshot` `/eval` | 待做 |
 | **M5** | CDP-over-pipe 代理，让 univer 也复用守护进程（进阶，未验证） | 待做 |
@@ -197,21 +210,20 @@ PASS  restart 后的实例可正常 stop  — code=0
 
 ## 8. 打包与分发
 
-两个包都是纯 ESM、零构建，`pnpm pack` 即可分发——这是 DSH 官方文档《打包与安装插件》推荐的 tarball 交付形式：用户拿到 `.tgz` 直接 `dsh plugin add` 安装，**既不用发 npm、也不需要在 profile 里给构建脚本授权**（从 GitHub 装拉的是源码，才需要 `prepare` + `allowBuilds`）。`npm pack` 等价，npm 缓存不可写时加 `npm_config_cache=/tmp/npm-cache`：
+**一个包、零构建**（纯 ESM），`pnpm pack` 即可分发——这是 DSH 官方文档《打包与安装插件》推荐的 tarball 交付形式：用户拿到 `.tgz` 直接 `dsh plugin add` 安装，**既不用发 npm、也不需要在 profile 里给构建脚本授权**（从 GitHub 装拉的是源码，才需要 `prepare` + `allowBuilds`）。`npm pack` 等价，npm 缓存不可写时加 `npm_config_cache=/tmp/npm-cache`：
 
 ```bash
 chmod 755 bin/browsersvc.mjs                          # bin 必须可执行（POSIX 下 npm 全局 shim 是指向它的符号链接）
-pnpm pack --pack-destination dist                     # dsh-browser-service-<v>.tgz：守护进程 CLI + 插件源码 + tools + docs + 验收脚本
-(cd plugin && pnpm pack --pack-destination ../dist)   # dsh-browser-cdp-<v>.tgz：**可安装的 DSH 组合包（bundle）**
+chmod -R u+rwX,go+rX .                                # 交付物里的文件权限由本机 umask 决定，打包前统一（F12）
+pnpm pack --pack-destination dist                     # dsh-browser-service-<v>.tgz：唯一交付物
 ```
 
-- **两个交付物角色不同，别装错**：
-  - `dsh-browser-cdp-<v>.tgz`（7 项 / 约 24 KB）是**组合包**：`package.json` 里声明 `"dsh": {"bundle": {"patch": "./cordis.patch.yml"}}`，安装就是 `dsh plugin --profile <name> add ./dsh-browser-cdp-<v>.tgz`，或者直接给 GitHub Release 的资产 URL（每个 Release 都挂了这两个 tarball，实测可用）。**注意不能写裸包名**：npm 上的 `dsh-browser-cdp` 是别人的同名包。装完由 DSH 组合自动插入 provider、把 seam 切到 `cdp-daemon`、关掉 `browser-electron`。**前置条件**：`dsh-builtin-browser` 必须先装（`browser`/`browser-electron`/`tool-browser` 三行由它插入，本包按 id 覆盖它们），且 `dsh plugin` 只在 `dsh.profile.bundles` 里**按列表顺序**叠加、后层按行胜出。顺序反了不报错，只打印 `patch: entry "browser" not found` 并静默丢掉覆盖行（等于没生效）——安装/恢复命令、`--dump-config` 校验期望、以及「手写 patch 与 bundle 不要同时用」都写在 `plugin/README.md`。
-  - `dsh-browser-service-<v>.tgz`（22 项 / 约 69 KB）是**守护进程工具包**，没有 `dsh.bundle`（`private: true`，按官方说明装进 profile 只会当普通依赖、不激活任何层）：解包后直接 `node bin/browsersvc.mjs start`，或 `npm i -g` 取 CLI。
-  - `files` 都不含 `node_modules`；插件的运行时依赖（`playwright-core` 只做 CDP 客户端、**不下载浏览器**，以及 `@deepseek-ai/schemastery`）由 profile 的 pnpm 解析——实测两者都解析到 profile 里已有的那一份，不会重复副本。
+- **单一交付物**：根 `package.json` 里声明 `"dsh": {"bundle": {"patch": "./plugin/cordis.patch.yml"}}`，同一个包同时提供 `bin/browsersvc.mjs`（守护进程 CLI）、`plugin/lib/*`（provider）与 `plugin/shims/*`（接缝/工具面转出口）。安装就是 `dsh plugin --profile <name> add ./dsh-browser-service-<v>.tgz`，或者给 Release 资产 URL。装完这一个包，`--dump-config` 里就出现 `# == dsh-browser-service` 层、`browser`（`browserProvider: cdp-daemon`）、`tool-browser`、`browser-cdp` 四行。
+- 依赖：`dsh-builtin-browser`（提供 seam 与 33 个工具，转出后面向 profile 生效）、`playwright-core`（只做 CDP 客户端，**不下载浏览器**）、`@deepseek-ai/schemastery`（配置 schema）。它们由 profile 的 pnpm 解析；接缝包需要的宿主 peer（`@deepseek-ai/cordis` / `dsh-tools` / `dsh-llm` …）由 DSH 在 boot 时建立的 `$DSH_HOME/profiles/node_modules/@deepseek-ai/*`（240 个入口）提供——profile 内任何包向上查找都能命中，所以不需要把它们写进本包依赖。
+- 每个版本在 GitHub Release 挂两份资产：**不带版本号**的 `dsh-browser-service.tgz`（供 `releases/latest/download/dsh-browser-service.tgz` 这类**永不过期**的固定地址引用——插件市场条目就用它）与带版本号的 `dsh-browser-service-<v>.tgz`（文档里建议钉版本用）。
+- `dist/` 已 gitignore。**没有走 npm**：本包历史名字 `dsh-browser-cdp` 已被同名第三方包占用（drscrewdriver 的 `dsh-browser-cdp`，0.17.4）；`dsh-browser-service` 这个名字在 npm 上还空着，要发的话登录后 `pnpm publish` 即可（届时 `dsh plugin add dsh-browser-service` 这种裸包名形式才成立）。
 - 官方文档提到的 `dsh.engines` / `dsh.compatibility` 元数据本包**没写**：宿主只认 `dsh.bundle`（`@deepseek-ai/dsh-package-manifest` 的 `DshManifest` 里没有这两个字段），它们只被插件市场的发现逻辑读取，宿主既不读也不校验。
-- 验收：`node scripts/verify-bundle.mjs` —— 在一次性隔离 `DSH_HOME` 里真实执行 `add` → `--dump-config` → 顺序反例 → `remove`，断言层已追加、三条 patch 行生效、装反会警告、`remove` 同时清掉依赖与层；不碰默认 profile。
-- `dist/` 已 gitignore；每个版本另在 GitHub Release 挂上这两个 tarball（可从 Release 页直接下载或按 URL 安装）——这就是分发方式。**没有走 npm**：`dsh-browser-cdp` 这个名字在 npm 上已被同名第三方包占用（drscrewdriver 的 `dsh-browser-cdp`，0.17.4），本包发不上去；`plugin/package.json` 里的 `publishConfig.access=public` 只有在改成独立 scope/新名字之后才有意义。
+- 验收：`node scripts/verify-bundle.mjs` —— 一次性隔离 `DSH_HOME` 里跑官方 `add` → `--dump-config` → 转出口形状比对 → `remove`，不碰默认 profile。
 
 ## 9. v0.3.0 变更（代码审查 18 条缺陷修复）
 
@@ -238,7 +250,7 @@ pnpm pack --pack-destination dist                     # dsh-browser-service-<v>.
 | F17 | CLI 未透传 `--start-timeout` / `--internal-port-base` | 只能靠环境变量 | `toCfg` 补两个参数 |
 | F18 | 验收脚本失败时留进程/临时目录 | 中断即留残余 | `process.on('exit')` 清理（内核 + 所有临时 root） |
 
-同批新增/加强的验收断言（`verify-daemon.mjs` 13 → **26**（v0.3.1 起 **31**），`verify-provider.mjs` 67 → **77**（v0.3.2 起 **86**））：401/403 凭据门、ws 地址改写、状态文件权限、越界 `--port`、`--lines=0`、内核不存在/不可执行/未就绪三种启动失败 + 不留孤儿与状态文件、`stop` 身份校验与 `--force`、错误 token 无法 attach、`savePath` 准入 6 项、4 路并发 attach、代理对截断。
+同批新增/加强的验收断言（`verify-daemon.mjs` 13 → **26**，`verify-provider.mjs` 67 → **77**）：401/403 凭据门、ws 地址改写、状态文件权限、越界 `--port`、`--lines=0`、内核不存在/不可执行/未就绪三种启动失败 + 不留孤儿与状态文件、`stop` 身份校验与 `--force`、错误 token 无法 attach、`savePath` 准入 6 项、4 路并发 attach、代理对截断。
 
 ## 10. v0.3.1 变更（上线验证发现的 5 条缺陷）
 
@@ -271,14 +283,26 @@ v0.3.2 上线后，按 DSH 官方《打包与安装插件》（官方仓库 `dee
 | # | 项 | 影响 | 处理 |
 | --- | --- | --- | --- |
 | B1 | 文档里的安装命令语法错误 | `dsh plugin add <pkg>` 少了必需的 `--profile`（`dsh plugin --help` 里 `--profile <name>` 是 required）⇒ 照抄必然失败 | 改为官方形式 `dsh plugin --profile <name> add <包名\|tarball>`，并写明 tarball 是官方推荐的「免构建授权」交付形式 |
-| B2 | 组合包的**安装顺序**是硬要求，但此前只写在内部分析里 | `browser`/`browser-electron`/`tool-browser` 三行由第三方组合包 `dsh-builtin-browser` 插入，本包 patch 的第 2/3 条按 id 覆盖它们；本包的层若排在 seam 包之前，loader 只打印 `patch: entry "browser" not found` 并静默丢弃覆盖行 ⇒ seam 仍选内置 Electron provider（「装上了但没生效」，没有任何报错） | `plugin/cordis.patch.yml` 头注释与 `plugin/README.md` 写清前提、先 seam 后本包的两条命令、`--dump-config` 校验期望、装反的恢复步骤；并说明为何不把 seam 写进本包依赖（`reconcileBundles` 只看 profile 自己声明的依赖，间接依赖不会进 `dsh.profile.bundles`） |
+| B2 | 组合包的**安装顺序**是硬要求，但此前只写在内部分析里 | `browser`/`browser-electron`/`tool-browser` 三行由第三方组合包 `dsh-builtin-browser` 插入，当时的插件子包 patch 第 2/3 条按 id 覆盖它们；子包的层若排在 seam 包之前，loader 只打印 `patch: entry "browser" not found` 并静默丢弃覆盖行 ⇒ seam 仍选内置 Electron provider（「装上了但没生效」，没有任何报错） | patch 头注释与安装文档写清前提与校验期望；v0.4.0 起改为**本包自己插入这三行**（见 §13），顺序问题随之消失 |
 | B3 | `@deepseek-ai/cordis` 声明为可选 peer，但从未使用 | 官方 peer 规则是「需要与宿主共享实例」才声明；本插件零 import cordis，loader 也不校验范围 ⇒ 纯噪声 | 删除 `peerDependencies` / `peerDependenciesMeta` |
-| B4 | 工具数一度被改回 32（**本轮的自我回归**） | 数工具的命令 `grep -o "name: 'browser_[a-z_]*'"` 的字符类漏了数字，`browser_a11y` 被静默漏掉 ⇒ 32；照这个数改文档，就把上一轮 `dd45fca` 的正确修正又翻了回去 | 以**运行期**实测为准：用 stub `ctx` 跑 `tool-browser` 的 `apply()`，`ctx.tools.register` 收到 **33** 个 `browser_*` 工具（含 `browser_a11y`）；README §7、`plugin/README.md`(×2)、`docs/feasibility.md`(×4) 统一为 33，并在此记下这个陷阱 |
+| B4 | 工具数一度被改回 32（**自我回归**） | 数工具的命令 `grep -o "name: 'browser_[a-z_]*'"` 的字符类漏了数字，`browser_a11y` 被静默漏掉 ⇒ 32；照这个数改文档，就把上一轮 `dd45fca` 的正确修正又翻了回去 | 以**运行期**实测为准：用 stub `ctx` 跑 `tool-browser` 的 `apply()`，`ctx.tools.register` 收到 **33** 个 `browser_*` 工具（含 `browser_a11y`）；全文统一为 33，并记下这个陷阱 |
 
-对应新增验收：`scripts/verify-bundle.mjs`（**16 项**）—— 一次性隔离 `DSH_HOME` 里跑官方流程：`add <tgz>` 追加依赖与层 → seam 缺席时确实报 not found → 正确顺序（seam → 本包）三条 patch 行全部生效 → 装反顺序只警告不报错且 seam 不被切走 → `remove` 同时清掉依赖与层。三套验收合计 31 + 86 + 16。
+对应新增验收：`scripts/verify-bundle.mjs`（16 项起）—— 一次性隔离 `DSH_HOME` 里跑官方流程。打包命令改为官方推荐的 `pnpm pack`（见 §8）。
 
-打包命令同时改为官方推荐的 `pnpm pack`（见 §8）；交付物分工与 `dsh.engines` / `dsh.compatibility` 的取舍也记在那里。
+## 13. v0.4.0 变更（一个包装完）
 
-## 13. 许可
+起因：插件市场（[awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)）的一键安装只能装**一个**包，而 v0.3.3 的形态是「工具包 + 插件子包」两个交付物、且必须先把第三方接缝包 `dsh-builtin-browser` 装成组合包才生效 ⇒ 市场里装到的只是 provider，装完即坏。v0.4.0 把三者合成一个包：
+
+| # | 项 | 做法 |
+| --- | --- | --- |
+| U1 | 合并交付物 | 删除 `plugin/package.json`（子包不再存在）；根 `package.json` 声明 `dsh.bundle.patch`，`exports` 暴露 `.`（provider）、`./browser`、`./tool-browser`（转出口）、`./cordis.patch.yml`、`./package.json` |
+| U2 | 自己挂接缝 | 新增 `plugin/shims/browser.js` 与 `plugin/shims/tool-browser.js`，从依赖 `dsh-builtin-browser` 转出 seam 插件与 33 个工具；patch 改为 `insert` 三行（`browser` 选 `cdp-daemon`、`tool-browser`、`browser-cdp`），不再依赖别的组合包先插入 |
+| U3 | 默认自启 | `plugin/lib/provider.js` 新增 `defaultAutoStartCommand()`：未配 `autoStartCommand` 时用**本包自带的** `bin/browsersvc.mjs`（`new URL('../../bin/browsersvc.mjs', import.meta.url)`），装完重启 DSH 即用 |
+| U4 | 转出口形状 bug（自查发现） | `dsh-builtin-browser/tool-browser` **没有 default 导出**（只有具名 `name`/`apply`/`inject`），最初写成 `export { default }` 会在组合期报 `does not provide an export named 'default'`；改为 `export *`（`browser` 侧两个都留），并在 `verify-bundle.mjs` 里加「转出口导出键 ≡ 源模块」断言 |
+| U5 | F26：`--internal-port-base` 被静默忽略 | `src/config.mjs` 里该键只读 `config.json`，CLI 传了没用（USAGE 却宣传了它）⇒ 改为 `CLI > config.json > 默认`，并补验收（`internalPort === 19700`） |
+
+对应验收：`verify-daemon.mjs` 31 → **32**、`verify-provider.mjs` 86 → **88**、`verify-bundle.mjs` 重写为 **23 项**（含单一交付物形状、`add` 后 `--dump-config` 四行齐全且无 not found、默认自启指向包内 bin、转出口形状比对、`remove` 清理）。隔离 web 模板 profile 里跑通了真实的 DSH 内端到端（§5 末尾）。
+
+## 14. 许可
 
 MIT

@@ -2,8 +2,8 @@
  * seam 探针（诊断/冒烟用，不属于交付特性）。
  *
  * 在一个真实 DSH 进程里通过 `ctx.browser` seam 跑一遍完整浏览器流程，
- * 结果追加到 /tmp/m2-seam-probe.log。用来验证「seam → dsh-browser-cdp
- * provider → 自动拉起 browsersvc → daemon CDP」这条链路在 DSH 里真的通。
+ * 结果追加到 /tmp/m2-seam-probe.log。用来验证「seam → dsh-browser-service
+ * （provider id = cdp-daemon）→ 自动拉起 browsersvc → daemon CDP」这条链路在 DSH 里真的通。
  */
 import { appendFileSync } from 'node:fs';
 

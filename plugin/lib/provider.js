@@ -12,7 +12,18 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { collectA11y, collectContent, collectScrape, collectSnapshot, detectChallengeMarkers, fillFields, readElementValue } from './dom.js';
+
+/**
+ * 未配置 autoStartCommand 时的默认自启命令：用本包自带的守护进程 CLI（bin/browsersvc.mjs）。
+ * 「一个包装完」——照 README 只装本包，端点不通时插件自己就能把守护进程拉起来。
+ * 包被拆走或 bin 缺失时返回 undefined（退化成「请先运行 browsersvc start」的报错）。
+ */
+export function defaultAutoStartCommand() {
+  const bin = fileURLToPath(new URL('../../bin/browsersvc.mjs', import.meta.url));
+  return existsSync(bin) ? `node ${JSON.stringify(bin)} start` : undefined;
+}
 
 const SESSION_UNKNOWN = 'BROWSER_SESSION_UNKNOWN';
 const TAB_UNKNOWN = 'BROWSER_TAB_UNKNOWN';
@@ -128,13 +139,15 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
       try {
         this.#conn = await attach();
       } catch (first) {
-        if (!config.autoStartCommand || this.#autoStarted) {
+        // 没配 autoStartCommand 就用本包自带的 binsvc（一个包装完，装完即可自启）。
+        const autoStartCommand = config.autoStartCommand ?? defaultAutoStartCommand();
+        if (!autoStartCommand || this.#autoStarted) {
           throw fail(`browser: 无法连接 CDP 端点 ${url}（${describe(first)}）；请先运行 browsersvc start`, ATTACH_FAILED, first);
         }
         this.#autoStarted = true;
-        note('info', `browser-cdp: CDP 端点不可用，按 autoStartCommand 自启：${config.autoStartCommand}`);
+        note('info', `browser-cdp: CDP 端点不可用，自启：${autoStartCommand}`);
         try {
-          await autoStart?.(config.autoStartCommand, config.autoStartTimeoutMs);
+          await autoStart?.(autoStartCommand, config.autoStartTimeoutMs);
           this.#conn = await attach();
         } catch (second) {
           throw fail(`browser: 自启后仍无法连接 CDP 端点 ${url}（${describe(second)}）`, ATTACH_FAILED, second);

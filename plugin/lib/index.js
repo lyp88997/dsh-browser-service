@@ -1,8 +1,8 @@
 /**
- * dsh-browser-cdp —— 把 DSH 的 browser seam 接到自建 CDP 浏览器服务（browsersvc）。
+ * dsh-browser-service 的 provider 插件 —— 把 DSH 的 browser seam 接到自建 CDP 浏览器服务（browsersvc）。
  *
- * 只做一件事：注册一个 BrowserProvider。工具面（browser_* 工具）继续由
- * `dsh-builtin-browser/tool-browser` 提供，因此本插件与内置工具层是解耦的。
+ * 只做一件事：注册一个 BrowserProvider。接缝（ctx.browser）与工具面（33 个 browser_* 工具）
+ * 由本包的依赖 dsh-builtin-browser 提供，经本包 ./browser、./tool-browser 转出后由 bundle patch 挂上。
  */
 import { exec } from 'node:child_process';
 import Schema from '@deepseek-ai/schemastery';
@@ -33,7 +33,10 @@ export const Config = Schema.object({
   /** 会话视口尺寸（坐标点击的空间）。 */
   viewportWidth: Schema.number().default(1440),
   viewportHeight: Schema.number().default(900),
-  /** 可选：CDP 端点不可用时执行一次的自启命令（例如 `node .../bin/browsersvc.mjs start`）。 */
+  /**
+   * 可选：CDP 端点不可用时执行一次的自启命令。
+   * 默认（不配置）用本包自带的 `bin/browsersvc.mjs start`，即装完本包就能自启（一个包装完）。
+   */
   autoStartCommand: Schema.string(),
   /** 自启命令（`browsersvc start` 内含内核冷启动 + 健康检查）的预算，与 attach 超时分开。 */
   autoStartTimeoutMs: Schema.number().default(60_000),

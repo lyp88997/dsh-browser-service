@@ -297,6 +297,22 @@ const runCli = (args, timeoutMs = 30_000) =>
 const badPort = await runCli(['status', '--port=99999']);
 check('越界 --port 被配置校验拒绝 (exit 2)', badPort.code === 2 && /无效的 port/.test(badPort.stdout), `code=${badPort.code} out=${badPort.stdout.trim().slice(0, 120)}`);
 
+// F26：--internal-port-base 必须真的生效（原先只读 config.json 的同名键，CLI 传了被静默忽略，
+// 于是 USAGE 里宣传的参数其实无效）。这里用一个不常见的基址，断言内核确实从它开始选端口。
+const rootIntBase = mkdtempSync(join(tmpdir(), 'dshsvc-intbase-'));
+extraRoots.push(rootIntBase);
+const intBase = 19700;
+await runCli(['start', `--root=${rootIntBase}`, '--port=0', '--internal-port-base=' + intBase, '--idle-ms=120000'], 60_000);
+const intBaseOut = await runCli(['status', `--root=${rootIntBase}`]);
+let intBaseInfo = {};
+try {
+  intBaseInfo = JSON.parse(intBaseOut.stdout);
+} catch {
+  /* 保持空 */
+}
+check('--internal-port-base 覆盖默认 9300', intBaseInfo.internalPort === intBase, `internalPort=${intBaseInfo.internalPort} 期望=${intBase}`);
+await runCli(['stop', `--root=${rootIntBase}`], 60_000);
+
 const badLines = await runCli(['logs', `--root=${root}`, '--lines=0']);
 check('--lines=0 被拒 (exit 2)', badLines.code === 2 && /invalid --lines/.test(badLines.stdout), `code=${badLines.code}`);
 

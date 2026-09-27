@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 端到端验收 dsh-browser-cdp（provider）+ browsersvc（守护进程）。
+ * 端到端验收 dsh-browser-service 的 provider（provider id = cdp-daemon）+ browsersvc（守护进程）。
  *
  * 不碰外网：本地起一个静态测试站点 + 真去 spawn 守护进程（真 Chromium 内核），
  * 然后按 seam 契约逐项调用 provider 的方法，断言返回值/错误码/副作用。
@@ -17,7 +17,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createProvider } from '../plugin/lib/provider.js';
+import { createProvider, defaultAutoStartCommand } from '../plugin/lib/provider.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const CLI = process.env.DSH_BROWSER_SVC_CLI ?? resolve(HERE, '../bin/browsersvc.mjs');
@@ -443,6 +443,43 @@ try {
   if (prevRoot === undefined) delete process.env.DSH_BROWSER_SVC_ROOT;
   else process.env.DSH_BROWSER_SVC_ROOT = prevRoot;
   rmSync(f19Root, { recursive: true, force: true });
+}
+
+// ── 默认自启：不配 autoStartCommand 时用本包自带的 bin/browsersvc.mjs（一个包装完） ──
+// 「一个包装完」的最后一环：装完本包什么都不用配，端点不通时插件自己用包内 CLI 拉起守护进程。
+{
+  console.log('\n默认自启命令（一个包装完）');
+  const defRoot = mkdtempSync(join(tmpdir(), 'svc-default-'));
+  const prevRoot = process.env.DSH_BROWSER_SVC_ROOT;
+  process.env.DSH_BROWSER_SVC_ROOT = defRoot;
+  const seen = [];
+  let first = true;
+  const fakeChromium = {
+    async connectOverCDP() {
+      if (first) {
+        first = false;
+        throw new Error('connect ECONNREFUSED 127.0.0.1:9417');
+      }
+      return { isConnected: () => true, on() {}, contexts: () => [] };
+    },
+  };
+  const provider = createProvider({
+    chromium: fakeChromium,
+    config: { cdpUrl: 'http://127.0.0.1:9417', connectTimeoutMs: 200, autoStartTimeoutMs: 200 },
+    autoStart: async (command) => { seen.push(command); },
+  });
+  try {
+    await provider.open('default');
+  } catch {
+    /* 假连接之后的流程（contexts 为空）失败与本断言无关 */
+  }
+  const expected = defaultAutoStartCommand();
+  check('默认自启命令指向本包 bin/browsersvc.mjs',
+    typeof expected === 'string' && expected.includes(join('bin', 'browsersvc.mjs')) && / start$/.test(expected), String(expected));
+  check('没配 autoStartCommand 也自启了一次', seen.length === 1 && seen[0] === expected, JSON.stringify(seen));
+  if (prevRoot === undefined) delete process.env.DSH_BROWSER_SVC_ROOT;
+  else process.env.DSH_BROWSER_SVC_ROOT = prevRoot;
+  rmSync(defRoot, { recursive: true, force: true });
 }
 
 // ── F25：连接成功过之后自启开关必须复位 ──────────────────────────────────────
