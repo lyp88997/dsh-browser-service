@@ -38,19 +38,6 @@
 
 ## 3. 快速开始
 
-### 前置：安装 DSH
-
-`browsersvc` 本身零依赖（只用 Node 内置能力），但要让 DSH 的 `browser_*` 工具走它，得先有 DSH。官方口径（[deepseek-harness README.zh.md](https://github.com/deepseek-ai/deepseek-harness/blob/master/README.zh.md#run)）：安装 Node.js，然后
-
-```bash
-npx @deepseek-ai/dsh web                  # 免安装试用；默认 http://127.0.0.1:3080，--no-open 只起服务不拉浏览器
-npm i -g @deepseek-ai/dsh && dsh web      # 常驻使用；本容器即此方式（dsh → /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js）
-```
-
-本仓库的插件要求 DSH ≥ 0.1.5 与 Node `^22.19.0 || >=24.0.0`（在 `@deepseek-ai/dsh@0.1.5-rc.3` + Node 24.21 上验证）。`dsh plugin --profile <name> add …` 在 profile 不存在时会自动初始化它（以 `@deepseek-ai/dsh-base` 起头），所以不必先手工建 profile。
-
-### 起浏览器服务
-
 ```bash
 # 1) 看本机能用哪个内核（会依次看环境变量、常见落点、PATH）
 node bin/browsersvc.mjs detect
@@ -89,8 +76,6 @@ node bin/browsersvc.mjs start \
 ### 给 DSH 的 `browser_*` 工具用（M2）
 
 把 M1 的守护进程接进 DSH 的 browser seam：插件只注册 provider，工具面沿用内置 `tool-browser` 的 `browser_*` 工具。
-
-正式分发走官方 `dsh plugin --profile <name> add <包|tarball>`（顺序硬要求与校验见 §8 与 `plugin/README.md`）；**下面三条是本容器当前在用的手写路线**，只适合改源码时的临时接线；两条路线不要同时用：
 
 ```bash
 # 1) 让 profile 能按裸名解析到插件（不动 profile 的 dependencies，避免 reconcileBundles 副作用）
