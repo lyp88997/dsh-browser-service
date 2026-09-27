@@ -14,7 +14,7 @@ browser_* 工具（内置 tool-browser）
 
 ## 依赖
 
-- DSH ≥ 0.1.5
+- DSH ≥ 0.1.5。官方装法：安装 Node.js 后 `npx @deepseek-ai/dsh web`（免安装试用，默认 `http://127.0.0.1:3080`），常驻使用则 `npm i -g @deepseek-ai/dsh` 再 `dsh web`。本包在 `@deepseek-ai/dsh@0.1.5-rc.3` 上验证。
 - Node `^22.19.0 || >=24.0.0`
 - **`dsh-builtin-browser` 组合包**：`ctx.browser` seam 与 33 个 `browser_*` 工具都由它提供（DSH 自身不含）。本包 `inject = ['browser']`，patch 里有两条按 id 覆盖它插入的行 —— 所以它有**安装顺序**要求，见下。
 - 运行时依赖：`playwright-core`（**不下载浏览器**，只做 CDP 客户端）、`@deepseek-ai/schemastery`
