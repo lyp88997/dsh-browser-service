@@ -52,12 +52,18 @@ DSH_HOME=... dsh plugin add dsh-browser-cdp      # 装进 profile，并写进 ds
 | `contentMaxChars` | `200000` | `browser_content` 截断长度 |
 | `viewportWidth` / `viewportHeight` | `1440` / `900` | 新页面视口 |
 | `autoStartCommand` | 空 | 可选：首次用浏览器时执行的命令（如 `node /path/to/dsh-browser-service/bin/browsersvc.mjs start`），需要内置/外部的 `browsersvc` 路径，按机器填 |
+| `autoStartTimeoutMs` | `60000` | `autoStartCommand` 的执行超时 |
+| `cdpToken` | 空 | 一般不用填：留空时自动读 `<DSH_BROWSER_SVC_ROOT 或 $DSH_HOME/browser-service>/service.json` 里的 `token`（每次 attach 重读，守护进程重启换 token 也能跟上）。只有指向自建/非 browsersvc 的 CDP 端点时才需要显式给 |
+| `downloadDir` | 空 | 填了就要求 `browser_screenshot` / `browser_download` 的 `savePath` 落在该目录内（未填则只强制「绝对路径 + 不覆盖已有文件」） |
 
 所有键都可写在 patch 的 `config:` 下。
 
+> **v0.3.0 起，公开端口要求 `Authorization: Bearer <token>`**（token 由 `browsersvc` 生成，落在 0600 的 `service.json`）。
+> 插件会自动读取它，**无需改 profile 配置**；但 `browsersvc` 与插件必须一起升级 —— 旧插件 + 新守护进程会在 401 上失败。
+
 ## 验证
 
-仓库 `scripts/verify-provider.mjs` 有 67 项零依赖验收（真实 `browsersvc` + 本地站点）：`cd ../ && node scripts/verify-provider.mjs`。
+仓库 `scripts/verify-provider.mjs` 有 77 项零依赖验收（真实 `browsersvc` + 本地站点）：`cd ../ && node scripts/verify-provider.mjs`。
 
 ## 许可
 

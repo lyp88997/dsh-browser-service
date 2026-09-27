@@ -57,6 +57,7 @@ const HOME = (base) => `<!doctype html><html lang="zh"><head><meta charset="utf-
   <div class="card"><span class="t">二</span><a href="/next">L2</a></div>
   <form id="form" action="/submitted"><input name="q2" placeholder="表单框"><input type="checkbox" name="ok"></form>
   <div style="height:4000px" aria-hidden="true"></div>
+  <div id="emoji">😀😀😀</div>
   <p id="base">${base}</p>
 </body></html>`;
 const NEXT = '<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>第二页</title></head><body><h1>第二页</h1><div class="card"><span class="t">三</span><a href="/next">L3</a></div></body></html>';
@@ -110,6 +111,8 @@ try {
   const ready = await waitForReady();
   console.log(`守护进程就绪：${JSON.stringify(ready)}\n`);
 
+  // provider 的真实取 token 路径：读 <root>/service.json（部署时 root 是 $DSH_HOME/browser-service）。
+  process.env.DSH_BROWSER_SVC_ROOT = root;
   const { chromium } = await import('playwright-core');
   provider = createProvider({
     chromium,
@@ -124,12 +127,32 @@ try {
       contentMaxChars: 200_000,
       viewportWidth: 1440,
       viewportHeight: 900,
+      downloadDir: root,
     },
   });
 
   console.log('契约字段');
   check('id 与配置一致', provider.id === 'cdp-daemon', provider.id);
   check('available() 为真', (await provider.available()) === true);
+
+  const wrongToken = createProvider({
+    chromium,
+    config: {
+      providerId: 'cdp-daemon',
+      cdpUrl: `http://127.0.0.1:${PORT}`,
+      connectTimeoutMs: 3000,
+      cdpToken: 'wrong-token',
+      actionTimeoutMs: 5000,
+      navigationTimeoutMs: 5000,
+      lookupTimeoutMs: 3000,
+      snapshotMaxElements: 50,
+      contentMaxChars: 1000,
+      viewportWidth: 800,
+      viewportHeight: 600,
+    },
+  });
+  await expectCode('错误 token 无法 attach（凭据门生效）', 'BROWSER_CDP_ATTACH_FAILED', () => wrongToken.open('bad'));
+  await wrongToken.dispose();
 
   console.log('\n会话与导航');
   const session = await provider.open('verify');
@@ -176,6 +199,8 @@ try {
   check('content html 支持 selector', html.content.includes('id="head"'), html.content.slice(0, 40));
   const capped = await provider.content(session, { format: 'txt', maxChars: 20 });
   check('content maxChars 触发 truncated', capped.truncated === true && capped.content.length <= 20, `len=${capped.content.length}`);
+  const emoji = await provider.content(session, { format: 'txt', selector: '#emoji', maxChars: 3 });
+  check('maxChars 不从代理对中间切开（F13）', emoji.truncated === true && emoji.content === '😀' && !/[\uD800-\uDBFF]$/.test(emoji.content), JSON.stringify(emoji.content));
 
   console.log('\n等待');
   const waited = await provider.waitFor(session, { selector: '#link', loaded: true });
@@ -245,6 +270,15 @@ try {
   const downloaded = await provider.download(session, { url: `${BASE}/next`, savePath: join(root, 'page.html') });
   check('download 落盘', existsSync(downloaded.path) && statSync(downloaded.path).size > 100, downloaded.path);
 
+  console.log('\n保存路径准入');
+  await expectCode('截图相对路径被拒', 'BROWSER_SCREENSHOT_BLOCKED', () => provider.screenshot(session, { savePath: 'shot.png' }));
+  await expectCode('截图越出 downloadDir 被拒', 'BROWSER_SCREENSHOT_BLOCKED', () => provider.screenshot(session, { savePath: '/tmp/outside-dsh.png' }));
+  await expectCode('截图拒绝覆盖已有文件', 'BROWSER_SCREENSHOT_BLOCKED', () => provider.screenshot(session, { savePath }));
+  await expectCode('下载相对路径被拒', 'BROWSER_DOWNLOAD_BLOCKED', () => provider.download(session, { url: `${BASE}/next`, savePath: 'page.html' }));
+  await expectCode('下载越出 downloadDir 被拒', 'BROWSER_DOWNLOAD_BLOCKED', () => provider.download(session, { url: `${BASE}/next`, savePath: '/tmp/outside-dsh.html' }));
+  await provider.screenshot(session, { savePath: join(root, 'shot2.png') });
+  check('downloadDir 内的新路径可写入', existsSync(join(root, 'shot2.png')) && statSync(join(root, 'shot2.png')).size > 1000, 'shot2.png');
+
   console.log('\n标签页 / 历史');
   await provider.openUrl(session, { url: `${BASE}/next`, newTab: true });
   tabs = await provider.listTabs(session);
@@ -278,6 +312,13 @@ try {
   await provider.navigate(session, { url: `${BASE}/` });
   const noChallenge = await provider.detectChallenge(session);
   check('detectChallenge 正常页为未拦截', noChallenge.blocked === false, JSON.stringify(noChallenge));
+
+  console.log('\n并发 attach');
+  const racers = await Promise.all(Array.from({ length: 4 }, (_, i) => provider.open(`race${i}`)));
+  check('4 个并发 open 各自拿到会话', new Set(racers).size === 4, JSON.stringify(racers));
+  const raceOk = await Promise.all(racers.map((id) => provider.execute(id, { script: '1 + 1' })));
+  check('并发 attach 后每个会话都可用（旧连接不会顶掉新连接）', raceOk.every((r) => r.ok === true && r.value === 2), JSON.stringify(raceOk.map((r) => r.value)));
+  for (const id of racers) await provider.close(id);
 
   console.log('\n隔离 / 认证 / 生命周期');
   await provider.execute(session, { script: "document.cookie = 'iso=ctxA; path=/'" });

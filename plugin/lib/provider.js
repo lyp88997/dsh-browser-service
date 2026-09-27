@@ -8,8 +8,10 @@
  * - 元素定位语义 css / text / xpath，text 为「精确优先 → 包含，深层优先」；
  * - history 记录在会话内，`result` 是截断后的文本，`at` 是 epoch 毫秒。
  */
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { collectA11y, collectContent, collectScrape, collectSnapshot, detectChallengeMarkers, fillFields, readElementValue } from './dom.js';
 
 const SESSION_UNKNOWN = 'BROWSER_SESSION_UNKNOWN';
@@ -44,10 +46,18 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
   };
 
+  // 保存路径准入的范围限制（F1）：与内置 browser provider 同语义 —— downloadDir 未配置时
+  // 只强制「绝对路径 + 不覆盖已有文件」，配置了才额外要求落在该目录内。
+  const downloadDir = typeof config.downloadDir === 'string' && config.downloadDir ? resolve(config.downloadDir) : undefined;
+
   class CdpProvider {
     id = config.providerId;
 
     #conn = null;
+
+    #connecting = null;
+
+    #conns = new Set();
 
     #sessions = new Map();
 
@@ -60,11 +70,57 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
       return Boolean(chromium);
     }
 
+    /**
+     * 公开端口要求 `Authorization: Bearer <token>`（每次守护进程启动随机生成，落在 0600 的状态文件里）。
+     * 显式配置 cdpToken 优先；否则每次都重新读状态文件，因为守护进程重启后 token 会变。
+     */
+    #cdpToken() {
+      if (typeof config.cdpToken === 'string' && config.cdpToken) return config.cdpToken;
+      const root = process.env.DSH_BROWSER_SVC_ROOT || join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'browser-service');
+      try {
+        const state = JSON.parse(readFileSync(join(root, 'service.json'), 'utf8'));
+        if (typeof state?.token === 'string' && state.token) return state.token;
+      } catch {
+        /* 没有状态文件（例如指向非 browsersvc 的 CDP 端点）就不带凭据 */
+      }
+      return null;
+    }
+
+    /**
+     * 保存路径准入：必须绝对路径；配了 downloadDir 必须落在其内；拒绝覆盖已有文件。
+     * 返回解析后的绝对路径。语义与内置 provider 的 admitSavePath 一致。
+     */
+    #admitSavePath(savePath, kind) {
+      const code = kind === 'download' ? 'BROWSER_DOWNLOAD_BLOCKED' : 'BROWSER_SCREENSHOT_BLOCKED';
+      const raw = typeof savePath === 'string' ? savePath : '';
+      if (!isAbsolute(raw)) throw fail(`browser: ${kind} savePath must be an absolute path（收到 "${raw}"）`, code);
+      const file = resolve(raw);
+      if (downloadDir !== undefined) {
+        const fileLower = file.toLowerCase();
+        const dirLower = downloadDir.toLowerCase();
+        if (fileLower !== dirLower && !fileLower.startsWith(dirLower + sep.toLowerCase())) {
+          throw fail(`browser: ${kind} savePath must be inside downloadDir "${downloadDir}"`, code);
+        }
+      }
+      if (existsSync(file)) throw fail(`browser: refusing to overwrite existing file "${file}" — use another name`, code);
+      return file;
+    }
+
     async #browser() {
       if (this.#conn?.isConnected?.()) return this.#conn;
-      this.#conn = null;
+      // 并发调用只允许一次握手（F6）：否则两个调用各自 connectOverCDP，后到的覆盖前者，
+      // 前一条连接再没人关。
+      if (!this.#connecting) this.#connecting = this.#attach().finally(() => { this.#connecting = null; });
+      return this.#connecting;
+    }
+
+    async #attach() {
       const url = config.cdpUrl;
-      const attach = () => chromium.connectOverCDP(url, { timeout: config.connectTimeoutMs });
+      const token = this.#cdpToken();
+      const attach = () => chromium.connectOverCDP(url, {
+        timeout: config.connectTimeoutMs,
+        ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
+      });
       try {
         this.#conn = await attach();
       } catch (first) {
@@ -74,17 +130,21 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
         this.#autoStarted = true;
         note('info', `browser-cdp: CDP 端点不可用，按 autoStartCommand 自启：${config.autoStartCommand}`);
         try {
-          await autoStart?.(config.autoStartCommand, config.connectTimeoutMs);
+          await autoStart?.(config.autoStartCommand, config.autoStartTimeoutMs);
           this.#conn = await attach();
         } catch (second) {
           throw fail(`browser: 自启后仍无法连接 CDP 端点 ${url}（${describe(second)}）`, ATTACH_FAILED, second);
         }
       }
-      this.#conn.on('disconnected', () => {
-        this.#conn = null;
+      const conn = this.#conn;
+      this.#conns.add(conn);
+      conn.on('disconnected', () => {
+        // 只清掉自己这一条：旧连接迟到的 disconnected 不能把新连接也抹掉（F6）。
+        this.#conns.delete(conn);
+        if (this.#conn === conn) this.#conn = null;
       });
       note('info', `browser-cdp: 已连接 CDP 端点 ${url}`);
-      return this.#conn;
+      return conn;
     }
 
     #session(id) {
@@ -131,7 +191,8 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
       void page
         .context()
         .newCDPSession(page)
-        .then((cdp) => cdp.send('Runtime.terminateExecution').catch(() => {}))
+        // 每个 CDPSession 都要显式 detach，否则卡死恢复每触发一次就漏一个会话（F8）。
+        .then((cdp) => cdp.send('Runtime.terminateExecution').catch(() => {}).finally(() => cdp.detach().catch(() => {})))
         .catch(() => {});
     }
 
@@ -256,7 +317,14 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
       } catch (error) {
         throw fail(`browser: 无法创建隔离上下文：${describe(error)}`, ATTACH_FAILED, error);
       }
-      const page = await context.newPage();
+      // newPage 失败必须把刚建的隔离上下文关掉，否则每次失败都漏一个 context（F14）。
+      let page;
+      try {
+        page = await context.newPage();
+      } catch (error) {
+        await context.close().catch(() => {});
+        throw fail(`browser: 无法在隔离上下文里新建标签页：${describe(error)}`, ATTACH_FAILED, error);
+      }
       const id = `s${(this.#sessionSeq += 1)}`;
       const session = { id, label: label ?? id, context, tabs: new Map(), active: '', tabSeq: 0, history: [], seq: 0, closed: false };
       session.active = this.#addTab(session, page);
@@ -275,9 +343,11 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
 
     async dispose() {
       for (const id of [...this.#sessions.keys()]) await this.close(id);
-      const conn = this.#conn;
+      // 关闭全部曾建立的连接，而不只是「当前这条」：并发握手/重连可能留下旧连接（F6）。
+      const conns = [...this.#conns];
+      this.#conns.clear();
       this.#conn = null;
-      await conn?.close?.().catch(() => {});
+      for (const conn of conns) await conn?.close?.().catch(() => {});
     }
 
     async openUrl(id, request, signal) {
@@ -749,9 +819,12 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
       this.#checkSignal(signal);
       const format = request?.format === 'jpeg' ? 'jpeg' : 'png';
       const quality = format === 'jpeg' ? (Number.isFinite(request?.quality) ? request.quality : 80) : undefined;
+      // 准入放在下面 try 之外：路径不合法要报 BROWSER_SCREENSHOT_BLOCKED，
+      // 而不是被统一重包成 BROWSER_SCREENSHOT_FAILED（F1）。
+      const savePath = typeof request?.savePath === 'string' && request.savePath ? this.#admitSavePath(request.savePath, 'screenshot') : null;
+      let buffer;
       try {
         const wantsScale = (Number.isFinite(request?.maxWidth) || Number.isFinite(request?.maxHeight)) && !request?.fullPage;
-        let buffer;
         if (wantsScale) {
           const viewport = page.viewportSize() ?? { width: config.viewportWidth, height: config.viewportHeight };
           const scale = Math.min(
@@ -774,23 +847,28 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
         } else {
           buffer = await page.screenshot({ fullPage: Boolean(request?.fullPage), type: format, ...(quality === undefined ? {} : { quality }) });
         }
-        if (request?.savePath) {
-          await mkdir(dirname(request.savePath), { recursive: true }).catch(() => {});
-          await writeFile(request.savePath, buffer);
-        }
-        const result = { dataUrl: `data:image/${format};base64,${buffer.toString('base64')}` };
-        if (request?.savePath) result.path = request.savePath;
-        return result;
       } catch (error) {
         throw fail(`browser: 截图失败：${describe(error)}`, 'BROWSER_SCREENSHOT_FAILED', error);
       }
+      const result = { dataUrl: `data:image/${format};base64,${buffer.toString('base64')}` };
+      if (savePath) {
+        try {
+          await mkdir(dirname(savePath), { recursive: true });
+          await writeFile(savePath, buffer);
+        } catch (error) {
+          throw fail(`browser: 截图写入失败：${describe(error)}`, 'BROWSER_SCREENSHOT_SAVE_FAILED', error);
+        }
+        result.path = savePath;
+      }
+      return result;
     }
 
     async download(id, request, signal) {
       const session = this.#session(id);
       this.#checkSignal(signal);
       const url = this.#assertUrl(request?.url);
-      return this.#record(session, 'download', { url, savePath: request?.savePath }, async () => {
+      const savePath = this.#admitSavePath(request?.savePath, 'download');
+      return this.#record(session, 'download', { url, savePath }, async () => {
         let response;
         try {
           response = await session.context.request.get(url, { timeout: config.actionTimeoutMs });
@@ -799,9 +877,13 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
         }
         if (!response.ok()) throw fail(`browser: 下载返回 HTTP ${response.status()}`, 'BROWSER_DOWNLOAD_BLOCKED');
         const body = await response.body();
-        await mkdir(dirname(request.savePath), { recursive: true }).catch(() => {});
-        await writeFile(request.savePath, body);
-        return { path: request.savePath };
+        try {
+          await mkdir(dirname(savePath), { recursive: true });
+          await writeFile(savePath, body);
+        } catch (error) {
+          throw fail(`browser: 下载写入失败：${describe(error)}`, 'BROWSER_DOWNLOAD_SAVE_FAILED', error);
+        }
+        return { path: savePath };
       });
     }
 

@@ -233,8 +233,16 @@ export function collectContent({ format, selector, maxChars }) {
     md = md.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
     content = md;
   }
-  const truncated = typeof maxChars === 'number' && content.length > maxChars;
-  return { content: truncated ? content.slice(0, maxChars) : content, truncated };
+  // 截断不能把代理对劈开（F13）：切点落在高代理（0xD800-0xDBFF）上时往前退一位，
+  // 否则返回的字符串尾是一个孤立代理项，JSON 序列化后是 U+FFFD 或直接报错。
+  const limit = typeof maxChars === 'number' && Number.isFinite(maxChars) && maxChars >= 0 ? maxChars : content.length;
+  let cut = Math.min(content.length, limit);
+  if (cut > 0 && cut < content.length) {
+    const code = content.charCodeAt(cut - 1);
+    if (code >= 0xd800 && code <= 0xdbff) cut -= 1;
+  }
+  const truncated = cut < content.length;
+  return { content: truncated ? content.slice(0, cut) : content, truncated };
 }
 
 /** 结构化抽取（静态 CSS，CSP 安全）。selector 支持 `sel@attr`，href/src 绝对化。 */

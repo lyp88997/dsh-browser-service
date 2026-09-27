@@ -12,7 +12,7 @@
  * 用法：node scripts/verify-daemon.mjs
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,9 +33,12 @@ const guard = setTimeout(() => {
 }, 120_000);
 guard.unref?.();
 
-async function probe(port, timeoutMs = 2000) {
+async function probe(port, timeoutMs = 2000, token) {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
+      signal: AbortSignal.timeout(timeoutMs),
+      ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
+    });
     return res.ok ? await res.json() : null;
   } catch {
     return null;
@@ -71,10 +74,10 @@ function assertLoopback(label, port) {
   return ok;
 }
 
-/** 极简 CDP 客户端（原生 WebSocket）。 */
-function connectCdp(port, webSocketDebuggerUrl) {
-  const path = new URL(webSocketDebuggerUrl).pathname;
-  const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`);
+/** 极简 CDP 客户端（原生 WebSocket）。wsUrl 必须是 /json/version 给出的地址（已被代理改写成
+ *  走代理 + 带 token），直连内部端口会绕过凭据门 —— 那正是本脚本要证明不成立的事。 */
+function connectCdp(wsUrl) {
+  const ws = new WebSocket(wsUrl);
   let seq = 0;
   const pending = new Map();
   ws.addEventListener('message', (ev) => {
@@ -139,6 +142,26 @@ const root = mkdtempSync(join(tmpdir(), 'browsersvc-verify-'));
 const child = spawn(process.execPath, [BIN, 'run', `--root=${root}`, '--port=0', `--idle-ms=${IDLE_MS}`], {
   stdio: ['ignore', 'pipe', 'pipe'],
 });
+// 任何提前退出（check 失败 / 未捕获异常）都要收掉内核和临时目录，别留孤儿（F18）。
+const extraRoots = [];
+let rootMissing;
+let rootStuck;
+let rootStop;
+const cleanup = () => {
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    /* 已退出 */
+  }
+  for (const dir of [root, ...extraRoots]) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* 尽力而为 */
+    }
+  }
+};
+process.on('exit', cleanup);
 let out = '';
 let err = '';
 child.stdout.on('data', (d) => {
@@ -164,8 +187,19 @@ if (!info) {
 check('守护进程启动', true, `公开端口 ${info.port} → 内部端口 ${info.internalPort}`);
 
 const port = info.port;
-const version = await probe(port);
+const token = info.token;
+const statePath = join(root, 'service.json');
+
+// ── 2b. 公开端口的凭据门与路径白名单（F7） ────────────────────────────────
+check('状态文件含 token 且不对外开放', typeof token === 'string' && token.length > 0 && (statSync(statePath).mode & 0o077) === 0, `mode=${(statSync(statePath).mode & 0o777).toString(8)}`);
+const unauth = await fetch(`http://127.0.0.1:${port}/json/version`).then((r) => r.status).catch(() => 0);
+check('无 token 访问公开端口被拒 (401)', unauth === 401, `status=${unauth}`);
+const forbidden = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT', headers: { authorization: `Bearer ${token}` } }).then((r) => r.status).catch(() => 0);
+check('白名单外的路径被拒 (403)', forbidden === 403, `status=${forbidden}`);
+
+const version = await probe(port, 2000, token);
 check('CDP /json/version', version?.['Protocol-Version'] === '1.3', `Browser=${version?.Browser}`);
+check('元数据 ws 地址被改写为走代理并带 token', typeof version?.webSocketDebuggerUrl === 'string' && new URL(version.webSocketDebuggerUrl).port === String(port) && version.webSocketDebuggerUrl.includes('token='), version?.webSocketDebuggerUrl);
 
 // ── 3. 只绑回环 ───────────────────────────────────────────────────────────
 assertLoopback('公开端口只绑 127.0.0.1', port);
@@ -173,7 +207,7 @@ assertLoopback('内部端口只绑 127.0.0.1', info.internalPort);
 
 // ── 4. 隔离上下文 ─────────────────────────────────────────────────────────
 try {
-  const cdp = connectCdp(port, version.webSocketDebuggerUrl);
+  const cdp = connectCdp(version.webSocketDebuggerUrl);
   await cdp.ready;
   const a = await openIsolatedContext(cdp, origin);
   const b = await openIsolatedContext(cdp, origin);
@@ -190,13 +224,13 @@ try {
 }
 
 // ── 5. 崩溃自动重启 ───────────────────────────────────────────────────────
-const stateFile = join(root, 'service.json');
+const stateFile = statePath;
 const before = JSON.parse(readFileSync(stateFile, 'utf8'));
 process.kill(before.browserPid, 'SIGKILL');
 let after = null;
 for (let i = 0; i < 60; i += 1) {
   await sleep(500);
-  const v = await probe(port);
+  const v = await probe(port, 2000, token);
   const st = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : null;
   if (v && st && st.browserPid && st.browserPid !== before.browserPid) {
     after = st;
@@ -204,16 +238,106 @@ for (let i = 0; i < 60; i += 1) {
   }
 }
 check('浏览器被杀后自动重启', Boolean(after), after ? `browserPid ${before.browserPid} → ${after.browserPid}` : '未在 30s 内恢复');
-if (after) check('重启后代理仍可用（自动改指向）', Boolean(await probe(port)), `内部端口 ${after.internalPort}`);
+if (after) check('重启后代理仍可用（自动改指向）', Boolean(await probe(port, 2000, token)), `内部端口 ${after.internalPort}`);
 
 // ── 6. 空闲自杀 ───────────────────────────────────────────────────────────
 for (let i = 0; i < 80 && child.exitCode === null; i += 1) await sleep(250);
 const gone = child.exitCode !== null;
 check('空闲后自动退出', gone, `exitCode=${child.exitCode}`);
 check('退出后清理状态文件', !existsSync(stateFile));
-check('退出后端口释放', (await probe(port, 800)) === null);
+check('退出后端口释放', (await probe(port, 800, token)) === null);
 
-// ── 汇总 ──────────────────────────────────────────────────────────────────
+// ── 7. CLI 防御性行为（配置校验 / 启动失败不留孤儿 / logs 参数 / stop 身份校验） ──
+const runCli = (args, timeoutMs = 30_000) =>
+  new Promise((resolve) => {
+    const p = spawn(process.execPath, [BIN, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    p.stdout.on('data', (d) => {
+      stdout += d;
+    });
+    p.stderr.on('data', (d) => {
+      stderr += d;
+    });
+    const timer = setTimeout(() => {
+      try {
+        p.kill('SIGKILL');
+      } catch {
+        /* 已退出 */
+      }
+    }, timeoutMs);
+    timer.unref?.();
+    p.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr });
+    });
+  });
+
+const badPort = await runCli(['status', '--port=99999']);
+check('越界 --port 被配置校验拒绝 (exit 2)', badPort.code === 2 && /无效的 port/.test(badPort.stdout), `code=${badPort.code} out=${badPort.stdout.trim().slice(0, 120)}`);
+
+const badLines = await runCli(['logs', `--root=${root}`, '--lines=0']);
+check('--lines=0 被拒 (exit 2)', badLines.code === 2 && /invalid --lines/.test(badLines.stdout), `code=${badLines.code}`);
+
+rootMissing = mkdtempSync(join(tmpdir(), 'browsersvc-verify-missing-'));
+extraRoots.push(rootMissing);
+const missing = await runCli(['run', `--root=${rootMissing}`, '--port=0', '--kernel=/nonexistent/chrome', '--idle-ms=3000']);
+check('内核不存在时启动失败且不留状态文件', missing.code !== 0 && !existsSync(join(rootMissing, 'service.json')) && /不存在/.test(missing.stdout + missing.stderr), `code=${missing.code} out=${(missing.stdout + missing.stderr).trim().slice(0, 140)}`);
+
+// 内核起来了但 CDP 永远不就绪：必须杀内核 + 干净退出，不能留下没有状态文件的孤儿（F2）。
+rootStuck = mkdtempSync(join(tmpdir(), 'browsersvc-verify-stuck-'));
+extraRoots.push(rootStuck);
+const fakeKernel = join(rootStuck, 'fake-kernel.mjs');
+const fakePidFile = join(rootStuck, 'kernel.pid');
+// 必须有 shebang：守护进程是按可执行文件直接 execve 的（不经过 shell）。
+writeFileSync(fakeKernel, `#!/usr/bin/env node\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(fakePidFile)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`);
+// 先不给她可执行位：内核可执行性校验必须拒绝，且不留状态文件（F4）。
+const notExec = await runCli(['run', `--root=${rootStuck}`, '--port=0', `--kernel=${fakeKernel}`, '--start-timeout=1500', '--idle-ms=3000']);
+check('内核不可执行时启动失败且不留状态文件', notExec.code !== 0 && !existsSync(join(rootStuck, 'service.json')) && /不可执行/.test(notExec.stdout + notExec.stderr), `code=${notExec.code} out=${(notExec.stdout + notExec.stderr).trim().slice(0, 140)}`);
+chmodSync(fakeKernel, 0o755);
+
+const stuck = await runCli(['run', `--root=${rootStuck}`, '--port=0', `--kernel=${fakeKernel}`, '--start-timeout=1500', '--idle-ms=3000']);
+const kernelPid = existsSync(fakePidFile) ? Number(readFileSync(fakePidFile, 'utf8')) : null;
+let kernelAlive = false;
+if (kernelPid) {
+  try {
+    process.kill(kernelPid, 0);
+    kernelAlive = true;
+  } catch {
+    kernelAlive = false;
+  }
+}
+check('内核未就绪时启动失败（不静默成功）', stuck.code !== 0 && /未就绪/.test(stuck.stdout + stuck.stderr), `code=${stuck.code} out=${(stuck.stdout + stuck.stderr).trim().slice(0, 140)}`);
+check('启动失败后不留孤儿内核', kernelPid !== null && !kernelAlive, `kernelPid=${kernelPid} alive=${kernelAlive}`);
+check('启动失败后不留状态文件', !existsSync(join(rootStuck, 'service.json')));
+
+// stop 身份校验（F3）：状态文件里的 pid 不是 browsersvc/内核时必须拒绝动手。
+if (process.platform === 'linux') {
+  rootStop = mkdtempSync(join(tmpdir(), 'browsersvc-verify-stop-'));
+  extraRoots.push(rootStop);
+  const dummy = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  writeFileSync(join(rootStop, 'service.json'), JSON.stringify({ supervisorPid: dummy.pid, browserPid: dummy.pid, port: 1, internalPort: 9300, listening: true, token: 'x' }));
+  const refused = await runCli(['stop', `--root=${rootStop}`]);
+  let dummyAlive = false;
+  try {
+    process.kill(dummy.pid, 0);
+    dummyAlive = true;
+  } catch {
+    dummyAlive = false;
+  }
+  check('stop 身份校验：拒绝杀不匹配的进程', refused.code === 1 && /身份校验未通过/.test(refused.stdout) && dummyAlive, `code=${refused.code} alive=${dummyAlive}`);
+  const forced = await runCli(['stop', `--root=${rootStop}`, '--force']);
+  check('stop --force 可强制清理', forced.code === 0 && /"stopped": true/.test(forced.stdout), `code=${forced.code}`);
+  try {
+    dummy.kill('SIGKILL');
+  } catch {
+    /* 已被 --force 收掉 */
+  }
+} else {
+  check('stop 身份校验（仅 linux 有 /proc）', true, `platform=${process.platform}`);
+}
+
+// ── 汇总 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 await new Promise((r) => originServer.close(r));
 rmSync(root, { recursive: true, force: true });
 const failed = results.filter((r) => !r.ok);

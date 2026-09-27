@@ -35,6 +35,17 @@ export const Config = Schema.object({
   viewportHeight: Schema.number().default(900),
   /** 可选：CDP 端点不可用时执行一次的自启命令（例如 `node .../bin/browsersvc.mjs start`）。 */
   autoStartCommand: Schema.string(),
+  /** 自启命令（`browsersvc start` 内含内核冷启动 + 健康检查）的预算，与 attach 超时分开。 */
+  autoStartTimeoutMs: Schema.number().default(60_000),
+  /**
+   * 访问代理端口的 Bearer token。默认（不配置）时自动读 `$DSH_BROWSER_SVC_ROOT|$DSH_HOME/browser-service/service.json`
+   * 里的 token（每次守护进程启动随机生成）。
+   */
+  cdpToken: Schema.string(),
+  /**
+   * 可选：截图/下载落盘的目录边界。不配置 = 只强制绝对路径且不覆盖已有文件（与内置 provider 同语义）。
+   */
+  downloadDir: Schema.string(),
 });
 
 /** 执行一次自启命令；超时或非零退出都视为失败。 */
