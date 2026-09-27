@@ -1,0 +1,39 @@
+# 把这段追加/替换到 $DSH_HOME/profiles/<profile>/cordis.patch.yml 的尾部。
+# 作用：
+#   1) 注册本仓库的 provider 插件 dsh-browser-cdp（seam: ctx.browser）
+#   2) seam 选用它（browserProvider: cdp-daemon）
+#   3) 关掉内置 Electron provider（服务器上没有 GUI 库/沙箱，不可用）
+#   4) 关掉 dsh-playwright-browser（它自带 10 个与内置同名的 browser_* 工具，会工具重名）
+#      → 从而恢复内置的完整工具面（auth/challenge/check/clear/download/execute/replay/scrape/...）
+#   5) univer 的 Chromium 继续走用户态包装脚本（不受 provider 影响）
+#
+# cdpUrl 指向 browsersvc 守护进程；autoStartCommand 让首次用浏览器时自动拉起，
+# 守护进程空闲 idleMs（默认 15 分钟）后自己退出。
+
+# 浏览器：provider 换成自建 CDP 服务（browsersvc），工具面仍用内置的 browser_* 工具集。
+# 详见 https://github.com/lyp88997/dsh-browser-service
+- insert:
+    - id: browser-cdp
+      name: dsh-browser-cdp
+      config:
+        cdpUrl: http://127.0.0.1:9333
+        connectTimeoutMs: 30000
+        autoStartCommand: node /home/node/DSH/dsh-browser-service/bin/browsersvc.mjs start
+
+# seam 选用我们的 provider
+- id: browser
+  config:
+    browserProvider: cdp-daemon
+
+# 关掉内置 Electron provider（本机无 GUI 库/无沙箱，不可用）
+- id: browser-electron
+  disabled: true
+
+# 关掉 dsh-playwright-browser，恢复内置完整工具面
+- id: playwright-browser
+  disabled: true
+
+# univer 的 Chromium 仍走用户态包装脚本
+- id: univer
+  config:
+    browserExecutablePath: /home/node/DSH/.browser/chromium-wrapper.sh

@@ -14,6 +14,7 @@
     "status": "node bin/browsersvc.mjs status",
     "detect": "node bin/browsersvc.mjs detect",
     "verify": "node scripts/verify-daemon.mjs",
-    "test": "node scripts/verify-daemon.mjs"
+    "verify:provider": "node scripts/verify-provider.mjs",
+    "test": "node scripts/verify-daemon.mjs && node scripts/verify-provider.mjs"
   }
 }

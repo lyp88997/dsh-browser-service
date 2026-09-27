@@ -4,7 +4,7 @@
 
 面向**无 root、无 GUI、host 网络**的服务器容器（本机就是这种：Debian 12 / uid 1000 / cgroup 只读 / `/dev/shm` 64M / 无 Xvfb）。
 
-> 状态：**M1 已完成并验收通过**（守护进程 + 回环代理 + 空闲回收 + 崩溃重启）。M2（DSH `ctx.browser` provider）尚未开始，见 §7。
+> 状态：**M1 已完成并验收通过**（守护进程 + 回环代理 + 空闲回收 + 崩溃重启）。**M2 已完成并验收通过**（`ctx.browser` provider 接进内置 `browser_*` 工具面，见 §3.3 与 `docs/provider-m2.md`）。
 
 ## 1. 它解决什么问题
 
@@ -72,6 +72,22 @@ node bin/browsersvc.mjs start \
 
 保持现状即可：univer 用同一份二进制与库，自己起临时实例（它没有 `connectOverCDP` 能力，见 `docs/feasibility.md`）。
 
+### 给 DSH 的 `browser_*` 工具用（M2）
+
+把 M1 的守护进程接进 DSH 的 browser seam：插件只注册 provider，工具面沿用内置 `tool-browser` 的 `browser_*` 工具。
+
+```bash
+# 1) 让 profile 能按裸名解析到插件（不动 profile 的 dependencies，避免 reconcileBundles 副作用）
+ln -s /home/node/DSH/dsh-browser-service/plugin $DSH_HOME/profiles/web/node_modules/dsh-browser-cdp
+# 2) 让插件解析到 playwright-core（用 profile 里已装的那份，不重复下载浏览器）
+ln -s $DSH_HOME/profiles/web/node_modules/playwright-core  node_modules/playwright-core
+# 3) 把 docs/profile-patch.browser-cdp.yml 追加到 $DSH_HOME/profiles/web/cordis.patch.yml 尾部，重启 DSH
+```
+
+patch 做四件事：注册 `dsh-browser-cdp`（带 `autoStartCommand`，首次用浏览器时自动拉起守护进程）、seam 选 `cdp-daemon`、关掉内置 `browser-electron`、关掉 `dsh-playwright-browser`（它自带 10 个与内置**同名**的 `browser_*` 工具，两个 provider 的工具面不能共存）。
+
+> ⚠️ 改完 patch **必须重启 DSH**：运行中的完整 web profile 上，`patchReload: live` 会静默回滚（进程 stdout 归 docker，看不到报错）。干净进程里 boot 完全正常。
+
 ## 4. CLI
 
 | 命令 | 说明 |
@@ -86,13 +102,16 @@ node bin/browsersvc.mjs start \
 
 参数：`--root` `--port`（0 = 自动择取）`--idle-ms` `--kernel` `--wrapper` `--user-data-dir` `--max-restarts`，对应环境变量 `DSH_BROWSER_SVC_ROOT` / `DSH_BROWSER_SVC_PORT` / `DSH_BROWSER_SVC_IDLE_MS` / `DSH_BROWSER_CHROME` / `DSH_BROWSER_WRAPPER`，也可写进 `$ROOT/config.json`。优先级：**CLI > 环境变量 > config.json > 自动探测**。
 
-## 5. 验收（13 项，零依赖）
+## 5. 验收（零依赖，不依赖外网）
 
 ```bash
-node scripts/verify-daemon.mjs      # 或 npm test / npm run verify
+node scripts/verify-daemon.mjs      # M1 守护进程：13/13
+node scripts/verify-provider.mjs    # M2 provider：65 通过，0 失败
 ```
 
-脚本只用 Node 内置能力（`fetch` / `WebSocket` / `http`），自己起本地源（不依赖外网），逐项检查：
+`verify-provider.mjs` 自己起本地站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖 session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back`/`forward`/`reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`。
+
+`verify-daemon.mjs` 只用 Node 内置能力（`fetch` / `WebSocket` / `http`），自己起本地源，逐项检查：
 
 ```
 PASS  守护进程启动  — 公开端口 33819 → 内部端口 9300
@@ -125,7 +144,7 @@ PASS  退出后端口释放
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | **M1** | 守护进程 + 回环代理 + 空闲回收 + 崩溃重启 + 13 项验收 | ✅ 完成 |
-| **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerProvider`），复用内置 `tool-browser` 的 33 个 `browser_*` 工具；同时 `disabled: true` 掉 `browser-electron` | 待做 |
+| **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerBrowserProvider`），复用内置 `tool-browser` 的 33 个 `browser_*` 工具；同时 `disabled: true` 掉 `browser-electron` 与 `dsh-playwright-browser` | ✅ 完成（65 项 + DSH 内端到端，见 `docs/provider-m2.md`） |
 | **M3** | univer 侧接线（保持包装脚本形态） | 已有可行做法 |
 | **M4** | 面向"任何插件"的通用 HTTP 面：`/fetch` `/screenshot` `/eval` | 待做 |
 | **M5** | CDP-over-pipe 代理，让 univer 也复用守护进程（进阶，未验证） | 待做 |
