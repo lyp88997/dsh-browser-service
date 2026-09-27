@@ -106,8 +106,8 @@ patch 做四件事：注册 `dsh-browser-cdp`（带 `autoStartCommand`，首次�
 ## 5. 验收（零依赖，不依赖外网）
 
 ```bash
-node scripts/verify-daemon.mjs      # M1 守护进程：26/26
-node scripts/verify-provider.mjs    # M2 provider：77 通过，0 失败
+node scripts/verify-daemon.mjs      # M1 守护进程：31/31
+node scripts/verify-provider.mjs    # M2 provider：83 通过，0 失败
 ```
 
 `verify-provider.mjs` 自己起本地站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖 session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back`/`forward`/`reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`。
@@ -141,8 +141,12 @@ PASS  启动失败后不留孤儿内核  — kernelPid=5559 alive=false
 PASS  启动失败后不留状态文件
 PASS  stop 身份校验：拒绝杀不匹配的进程  — code=1
 PASS  stop --force 可强制清理  — code=0
+PASS  restart 前置：隔离实例可启动  — code=0
+PASS  restart 真的停旧起新（F23）  — code=0
+PASS  restart 后 token 换新  — e033d630 → 8efe1748
+PASS  restart 后的实例可正常 stop  — code=0
 
-26/26 通过
+31/31 通过
 ```
 
 ## 6. 安全约束（不要动）
@@ -159,9 +163,9 @@ PASS  stop --force 可强制清理  — code=0
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| **M1** | 守护进程 + 回环代理 + 空闲回收 + 崩溃重启 + 26 项验收 | ✅ 完成 |
-| **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerBrowserProvider`），复用内置 `tool-browser` 的 33 个 `browser_*` 工具；同时 `disabled: true` 掉 `browser-electron` 与 `dsh-playwright-browser` | ✅ 完成（77 项 + DSH 内端到端，见 `docs/provider-m2.md`） |
-| **M6** | 代码审查 18 条缺陷修复：公开端口凭据门、启动失败不留孤儿、stop 身份校验、保存路径准入、并发握手/连接计数、代理对截断…（见 §10） | ✅ 完成（v0.3.0） |
+| **M1** | 守护进程 + 回环代理 + 空闲回收 + 崩溃重启 + 31 项验收 | ✅ 完成 |
+| **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerBrowserProvider`），复用内置 `tool-browser` 的 32 个 `browser_*` 工具；同时 `disabled: true` 掉 `browser-electron` 与 `dsh-playwright-browser` | ✅ 完成（83 项 + DSH 内端到端，见 `docs/provider-m2.md`） |
+| **M6** | 代码审查 18 条缺陷修复：公开端口凭据门、启动失败不留孤儿、stop 身份校验、保存路径准入、并发握手/连接计数、代理对截断…（见 §9、§10） | ✅ 完成（v0.3.0 / v0.3.1） |
 | **M3** | univer 侧接线（保持包装脚本形态） | 已有可行做法 |
 | **M4** | 面向"任何插件"的通用 HTTP 面：`/fetch` `/screenshot` `/eval` | 待做 |
 | **M5** | CDP-over-pipe 代理，让 univer 也复用守护进程（进阶，未验证） | 待做 |
@@ -178,7 +182,7 @@ npm pack --pack-destination dist                     # dsh-browser-service-<v>.t
 (cd plugin && npm pack --pack-destination ../dist)   # dsh-browser-cdp-<v>.tgz：provider 插件（含自带 cordis.patch.yml）
 ```
 
-- 根包 `files` = `bin src plugin tools docs scripts README.md LICENSE`（21 项 / 57 KB，不含 `node_modules`），保持 `private: true`，只走 tarball。
+- 根包 `files` = `bin src plugin tools docs scripts README.md LICENSE`（21 项 / 62 KB，不含 `node_modules`），保持 `private: true`，只走 tarball。
 - 插件包**独立可装**：`package.json` 声明 `"dsh": {"bundle": {"patch": "./cordis.patch.yml"}}`，装进 profile 依赖 / `dsh.profile.bundles` 后由 DSH 组合自动插入 provider、把 seam 切到 `cdp-daemon`、关掉 `browser-electron`——实测 `--dump-config` 的组合结果带 `# == dsh-builtin-browser, patched by dsh-browser-cdp`（7 项 / 22 KB）。`publishConfig.access=public`，也可 `npm publish`。
 - 运行时依赖只有 `playwright-core`（只做 CDP 客户端，**不下载浏览器**）与 `@deepseek-ai/schemastery`；`@deepseek-ai/cordis` 是可选 peer。
 - `dist/` 已 gitignore；插件包的安装方式与配置见 `plugin/README.md`。
@@ -208,8 +212,22 @@ npm pack --pack-destination dist                     # dsh-browser-service-<v>.t
 | F17 | CLI 未透传 `--start-timeout` / `--internal-port-base` | 只能靠环境变量 | `toCfg` 补两个参数 |
 | F18 | 验收脚本失败时留进程/临时目录 | 中断即留残余 | `process.on('exit')` 清理（内核 + 所有临时 root） |
 
-同批新增/加强的验收断言（`verify-daemon.mjs` 13 → **26**，`verify-provider.mjs` 67 → **77**）：401/403 凭据门、ws 地址改写、状态文件权限、越界 `--port`、`--lines=0`、内核不存在/不可执行/未就绪三种启动失败 + 不留孤儿与状态文件、`stop` 身份校验与 `--force`、错误 token 无法 attach、`savePath` 准入 6 项、4 路并发 attach、代理对截断。
+同批新增/加强的验收断言（`verify-daemon.mjs` 13 → **26**（v0.3.1 起 **31**），`verify-provider.mjs` 67 → **77**（v0.3.1 起 **83**））：401/403 凭据门、ws 地址改写、状态文件权限、越界 `--port`、`--lines=0`、内核不存在/不可执行/未就绪三种启动失败 + 不留孤儿与状态文件、`stop` 身份校验与 `--force`、错误 token 无法 attach、`savePath` 准入 6 项、4 路并发 attach、代理对截断。
 
-## 10. 许可
+## 10. v0.3.1 变更（上线验证发现的 5 条缺陷）
+
+v0.3.0 装进运行实例后按「重启 → 真实调用浏览器」验证，又暴露出 4 条只有活实例才能撞到的缺陷，以及 1 条验收脚本自身的残留：
+
+| # | 缺陷 | 复现/影响 | 修复 |
+| --- | --- | --- | --- |
+| F19 | provider 自启后重试不带新 token | 冷启动（状态文件里还没有 token）时第一次 `connectOverCDP` 失败 → `autoStartCommand` 拉起守护进程并写入新 token → 重试仍用**旧**（空）token ⇒ 必 401，浏览器冷启动后第一次调用不可用 | token 读取移进每次 `connectOverCDP` 尝试内部（`#attach` 的 `attach()` 闭包），每次重试重读状态文件 |
+| F20 | 请求头超时定时器未撤，10s 后拆掉长连接 | 连接建立 10s 后 `proxy: 408 request headers timeout` → `settle()` → `destroyBoth()`，CDP WebSocket 长连接被误杀；表现为「会话内没有可用标签页」、`/json/list` 只剩 about:blank | 请求头解析成功后立刻 `clearTimeout(headTimer)` |
+| F22 | 连接被换掉后会话永久失效 | 守护进程重启 / F20 拆线 / 内核崩溃后，旧 context/page 随旧连接失效，而内置工具层按 task **永久缓存** session id 且从不重开（`ensureSession`）⇒ 之后每一次 `browser_*` 调用都报「会话内没有可用标签页」，直到人工 `browser_reset_session` 或重启 DSH | 所有会话操作前先走 `#liveSession(id)`：连接不是同一条、或当前标签页已死时，在新连接上按原 session id 重建 context+page（审计历史 `history` 保留） |
+| F23 | `browsersvc restart` 变成「只停不起」 | `print()` 内部 `process.exit()`，`restart` 里 `await stop(...)` 打完 JSON 就退出，`start` 永不执行：实例被停掉却报 `stopped: true` 收场 | `start`/`stop` 增 `quiet` 模式（返回结果而不打印/退出，成功后**立即返回**而不是继续轮询到超时），`restart` 用 quiet 跑两步再统一输出 `{restarted, stopped, started}` |
+| F24 | 验收脚本 restart 后收不干净 | `verify-provider.mjs` 的 `shutdown()` 只杀自己 spawn 的子进程，F22 用例重启出来的实例不是它 ⇒ 残留守护进程占着端口（下次运行 `EADDRINUSE`）+ 残留内核 | `shutdown()` 末尾再走一次 CLI `stop --root=<root>`（带 F3 身份校验），覆盖重启出来的实例 |
+
+对应新增验收：`verify-provider.mjs` 77 → **83**（守护进程 restart 真的停旧起新、token 换新、重启后同一个 session id 仍可 execute/导航、连接重建后会话复活），`verify-daemon.mjs` 26 → **31**（隔离 root 真实跑 `start → restart → stop`、restart 后 token 换新、restart 后的实例可正常 stop）。
+
+## 11. 许可
 
 MIT

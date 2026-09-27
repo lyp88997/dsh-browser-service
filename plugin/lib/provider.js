@@ -116,11 +116,15 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
 
     async #attach() {
       const url = config.cdpUrl;
-      const token = this.#cdpToken();
-      const attach = () => chromium.connectOverCDP(url, {
-        timeout: config.connectTimeoutMs,
-        ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
-      });
+      // token 必须在每次尝试时重新读（F19）：自启前的状态文件里没有 token，若在这里读一次就被
+      // 自启后的重试沿用，重试必然 401，浏览器在冷启动后第一次不可用。
+      const attach = () => {
+        const token = this.#cdpToken();
+        return chromium.connectOverCDP(url, {
+          timeout: config.connectTimeoutMs,
+          ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
+        });
+      };
       try {
         this.#conn = await attach();
       } catch (first) {
@@ -150,6 +154,48 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     #session(id) {
       const session = this.#sessions.get(String(id));
       if (!session || session.closed) throw fail(`browser: 会话 "${String(id)}" 不存在或已关闭`, SESSION_UNKNOWN);
+      return session;
+    }
+
+    /**
+     * 取会话并自愈连接（F22）：CDP 连接一旦被换掉（守护进程重启、F20 拆线、内核崩溃），
+     * 旧 context/page 全部失效。工具层按 task 永久缓存 session id 且从不重开
+     * （dsh-builtin-browser/lib/tool-browser/index.js ensureSession），所以这里必须按原 id
+     * 把会话重建在新连接上，否则之后每次 browser_* 调用都只会报「会话内没有可用标签页」，
+     * 直到人工 browser_reset_session 或重启 DSH。
+     */
+    async #liveSession(id) {
+      const session = this.#session(id);
+      const conn = await this.#browser();
+      const active = session.tabs.get(session.active);
+      // 连接还是同一条、当前标签页也还活着 ⇒ 无需处理。否则（连接被换掉，或当前标签页已死）
+      // 都要在新连接上按原 id 重建。
+      if (session.conn === conn && active && !active.isClosed()) return session;
+      // 并发调用不能各建一个 context（会把后建的顶掉，泄漏前一个）：每个会话只允许一次重建。
+      if (!session.reviving) {
+        session.reviving = this.#revive(session, conn).finally(() => {
+          session.reviving = null;
+        });
+      }
+      return session.reviving;
+    }
+
+    async #revive(session, conn) {
+      const stale = session.context;
+      try {
+        const context = await conn.newContext({
+          viewport: { width: config.viewportWidth, height: config.viewportHeight },
+        });
+        const page = await context.newPage();
+        session.conn = conn;
+        session.context = context;
+        session.tabs = new Map();
+        session.active = this.#addTab(session, page);
+      } catch (error) {
+        throw fail(`browser: 会话 "${session.id}" 的连接已失效且无法恢复（${describe(error)}）`, ATTACH_FAILED, error);
+      }
+      await stale?.close?.().catch(() => {});
+      note('info', `browser-cdp: 连接已重建，会话 ${session.id} 已恢复`);
       return session;
     }
 
@@ -326,7 +372,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
         throw fail(`browser: 无法在隔离上下文里新建标签页：${describe(error)}`, ATTACH_FAILED, error);
       }
       const id = `s${(this.#sessionSeq += 1)}`;
-      const session = { id, label: label ?? id, context, tabs: new Map(), active: '', tabSeq: 0, history: [], seq: 0, closed: false };
+      const session = { id, label: label ?? id, conn: browser, reviving: null, context, tabs: new Map(), active: '', tabSeq: 0, history: [], seq: 0, closed: false };
       session.active = this.#addTab(session, page);
       this.#sessions.set(id, session);
       note('info', `browser-cdp: 打开会话 ${id}${label ? `（${label}）` : ''}`);
@@ -351,7 +397,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async openUrl(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       this.#checkSignal(signal);
       const page = request?.newTab ? await this.#newTab(session) : this.#page(session);
       await this.#record(session, 'navigate', { url: request?.url, newTab: Boolean(request?.newTab) }, async () => {
@@ -367,7 +413,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async listTabs(id) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const tabs = [];
       for (const [tabId, page] of session.tabs) {
         let url = '';
@@ -386,7 +432,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async switchTab(id, tabId) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = session.tabs.get(String(tabId));
       if (!page) {
         throw fail(`browser: 标签页 "${String(tabId)}" 不在本会话（现有：${[...session.tabs.keys()].join(', ')}）`, TAB_UNKNOWN);
@@ -396,7 +442,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async closeTab(id, tabId) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const tabIdStr = String(tabId);
       const page = session.tabs.get(tabIdStr);
       if (!page) throw fail(`browser: 标签页 "${tabIdStr}" 不在本会话`, TAB_UNKNOWN);
@@ -411,7 +457,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async reset(id) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       for (const page of session.tabs.values()) {
         if (!page.isClosed()) await page.close().catch(() => {});
       }
@@ -425,7 +471,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     // ---- 页面操作 ----
 
     async navigate(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       await this.#record(session, 'navigate', { url: request?.url }, async () => {
@@ -435,7 +481,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async execute(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       const script = String(request?.script ?? '');
@@ -461,7 +507,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async waitFor(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       const timeoutMs = request?.timeoutMs ?? config.actionTimeoutMs;
       const hasUrl = typeof request?.url === 'string' && request.url.length > 0;
@@ -507,7 +553,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async snapshot(id, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       try {
@@ -523,7 +569,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async a11y(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       const requested = Number.isFinite(request?.maxNodes) ? request.maxNodes : 500;
@@ -537,7 +583,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async reload(id, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       try {
@@ -548,14 +594,14 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async detectChallenge(id, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       return this.#challenge(page);
     }
 
     async content(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       const format = ['html', 'markdown', 'txt', 'json'].includes(request?.format) ? request.format : 'txt';
@@ -571,7 +617,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async click(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       await this.#record(session, 'click', { ...(request ?? {}) }, async () => {
@@ -594,7 +640,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async type(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       const value = String(request?.text ?? '');
@@ -616,7 +662,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async setValue(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       const timeoutMs = request?.timeoutMs ?? config.actionTimeoutMs;
@@ -647,7 +693,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async check(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       try {
@@ -661,7 +707,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async selectOption(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       try {
@@ -681,7 +727,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async clearField(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       try {
@@ -702,7 +748,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async getValue(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       try {
@@ -719,7 +765,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async scrape(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       const timeoutMs = request?.timeoutMs ?? config.lookupTimeoutMs;
@@ -733,7 +779,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async scroll(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       try {
@@ -763,7 +809,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async back(id, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       try {
@@ -774,7 +820,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async forward(id, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       try {
@@ -785,7 +831,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async key(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       const name = String(request?.key ?? '');
@@ -800,7 +846,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async fillForm(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       return this.#record(session, 'fill', { fields: request?.fields, submit: Boolean(request?.submit) }, async () => {
@@ -814,7 +860,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async screenshot(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const page = this.#page(session);
       this.#checkSignal(signal);
       const format = request?.format === 'jpeg' ? 'jpeg' : 'png';
@@ -864,7 +910,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async download(id, request, signal) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       this.#checkSignal(signal);
       const url = this.#assertUrl(request?.url);
       const savePath = this.#admitSavePath(request?.savePath, 'download');
@@ -888,7 +934,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async flushAuth(id) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       return this.#record(session, 'flushAuth', {}, async () => {
         const cookies = await session.context.cookies();
         return cookies.map((cookie) => {
@@ -910,7 +956,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async restoreAuth(id, cookies) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       return this.#record(session, 'restoreAuth', { count: cookies?.length ?? 0 }, async () => {
         const list = (cookies ?? []).map((cookie) => {
           const base = {
@@ -936,7 +982,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     async replay(id, seq) {
-      const session = this.#session(id);
+      const session = await this.#liveSession(id);
       const entry = session.history.find((item) => item.seq === seq);
       if (!entry) throw fail(`browser: 历史序号 ${seq} 不存在`, 'BROWSER_HISTORY_UNKNOWN');
       if (!REPLAYABLE.has(entry.action)) throw fail(`browser: 操作 "${entry.action}" 不可回放（可回放：${[...REPLAYABLE].join(', ')}）`, 'BROWSER_HISTORY_NOT_REPLAYABLE');

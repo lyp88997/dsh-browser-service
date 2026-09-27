@@ -1,6 +1,6 @@
 {
   "name": "dsh-browser-cdp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "DSH browser provider backed by a self-hosted CDP browser service (browsersvc): reuses the built-in browser_* tool face",
   "license": "MIT",
   "type": "module",

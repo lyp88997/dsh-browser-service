@@ -13,7 +13,7 @@
  */
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -104,6 +104,14 @@ const shutdown = async () => {
   if (daemon.exitCode === null) daemon.kill('SIGTERM');
   await new Promise((ok) => setTimeout(ok, 300));
   if (daemon.exitCode === null) daemon.kill('SIGKILL');
+  // F22 用例会 restart 守护进程：重启后的实例不是我们 spawn 的那个子进程，只杀子进程会
+  // 漏掉它（占着端口 + 留着内核，下次运行直接 EADDRINUSE）。统一再交给 CLI stop 收一遍，
+  // 它带 F3 的 pid 身份校验，不会误杀。
+  await new Promise((resolve) => {
+    const p = spawn(process.execPath, [CLI, 'stop', `--root=${root}`], { stdio: 'ignore' });
+    p.on('close', resolve);
+    p.on('error', resolve);
+  });
   if (process.env.KEEP_ROOT !== '1') rmSync(root, { recursive: true, force: true });
 };
 
@@ -342,10 +350,99 @@ try {
   check('close 幂等', true);
   await provider.close(session);
   await expectCode('关闭主 session 后失效', 'BROWSER_SESSION_UNKNOWN', () => provider.snapshot(session));
+
+  // ── F22：CDP 连接被换掉（守护进程重启 / F20 拆线 / 内核崩溃）之后，工具层按 task 永久缓存
+  // 的 session id 必须仍可用：provider 要在新连接上按原 id 重建会话，而不是让之后每一次
+  // browser_* 调用都报「会话内没有可用标签页」直到重启 DSH。顺带覆盖重启后换 token（F19）。
+  console.log('\nF22 连接重建后会话复活');
+  const revive = await provider.open('f22');
+  await provider.openUrl(revive, { url: `${BASE}/` });
+  const beforeRestart = await provider.execute(revive, { script: '1 + 1' });
+  check('重启前会话可用', beforeRestart.ok === true && beforeRestart.value === 2, JSON.stringify(beforeRestart));
+  const tokenOf = () => {
+    try {
+      return JSON.parse(readFileSync(join(root, 'service.json'), 'utf8')).token;
+    } catch {
+      return null;
+    }
+  };
+  const tokenBefore = tokenOf();
+  // 用异步 spawn 而不是 spawnSync：阻塞事件循环会让客户端没机会观察到掉线，
+  // 那是测试自己造出来的假象（真实场景里 DSH 进程一直在跑事件循环）。
+  const restarted = await new Promise((resolve) => {
+    const p = spawn(process.execPath, [CLI, 'restart', `--root=${root}`, `--port=${PORT}`, '--idle-ms=120000'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    p.stdout.on('data', (d) => {
+      stdout += d;
+    });
+    p.stderr.on('data', (d) => {
+      stderr += d;
+    });
+    p.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+  let restartedJson = {};
+  try {
+    restartedJson = JSON.parse(restarted.stdout ?? '');
+  } catch {
+    restartedJson = {};
+  }
+  const tokenAfter = tokenOf();
+  check('守护进程 restart 真的重启了实例（F23）', restarted.code === 0 && restartedJson.restarted === true && restartedJson.stopped === true, String(restarted.stdout).trim().slice(0, 160) || String(restarted.stderr).trim().slice(0, 160));
+  check('重启后 token 已换新', typeof tokenAfter === 'string' && tokenAfter.length > 0 && tokenAfter !== tokenBefore, `${String(tokenBefore).slice(0, 8)} → ${String(tokenAfter).slice(0, 8)}`);
+  let reviveError = null;
+  const afterRestart = await provider.execute(revive, { script: '1 + 1' }).catch((error) => {
+    reviveError = error;
+    return null;
+  });
+  check('重启后同一个 session id 仍可用（F22）', afterRestart?.ok === true && afterRestart.value === 2, reviveError ? `${reviveError.code ?? ''} ${reviveError.message}` : JSON.stringify(afterRestart));
+  await provider.openUrl(revive, { url: `${BASE}/` }).catch((error) => {
+    reviveError = error;
+  });
+  const revived = await provider.execute(revive, { script: 'location.pathname' }).catch((error) => {
+    reviveError = error;
+    return null;
+  });
+  check('复活后的会话可以继续导航', revived?.value === '/', reviveError ? `${reviveError.code ?? ''} ${reviveError.message}` : JSON.stringify(revived));
+  await provider.close(revive);
 } catch (error) {
   check(`未捕获异常：${error?.message}`, false, error?.stack?.split('\n').slice(0, 3).join(' | '));
 } finally {
   await shutdown();
+}
+
+// ── F19：自启之后的重试必须重新读状态文件里的 token ──────────────────────────
+// 冷启动时序：第一次 connect 时守护进程还没起（状态文件里没有 token）→ 失败 → autoStart 拉起
+// 守护进程并写入新 token → 重试必须带**新**token，否则必然 401，浏览器冷启动后第一次不可用。
+{
+  console.log('\nF19 自启重试重新读 token');
+  const f19Root = mkdtempSync(join(tmpdir(), 'svc-f19-'));
+  const prevRoot = process.env.DSH_BROWSER_SVC_ROOT;
+  process.env.DSH_BROWSER_SVC_ROOT = f19Root;
+  const attempts = [];
+  const fakeChromium = {
+    async connectOverCDP(_url, options) {
+      attempts.push(options?.headers?.authorization ?? null);
+      if (attempts.length === 1) throw new Error('connect ECONNREFUSED 127.0.0.1:9419');
+      return { isConnected: () => true, on() {}, contexts: () => [] };
+    },
+  };
+  const f19 = createProvider({
+    chromium: fakeChromium,
+    config: { cdpUrl: 'http://127.0.0.1:9419', connectTimeoutMs: 200, autoStartCommand: 'true', autoStartTimeoutMs: 200 },
+    autoStart: async () => {
+      writeFileSync(join(f19Root, 'service.json'), JSON.stringify({ token: 'late-token' }));
+    },
+  });
+  try {
+    await f19.open('f19');
+  } catch {
+    /* 假连接之后的流程（contexts 为空）失败与本断言无关 */
+  }
+  check('自启后重试带上了新 token（第一次尝试无 token）', attempts[0] === null && attempts[1] === 'Bearer late-token', JSON.stringify(attempts));
+  if (prevRoot === undefined) delete process.env.DSH_BROWSER_SVC_ROOT;
+  else process.env.DSH_BROWSER_SVC_ROOT = prevRoot;
+  rmSync(f19Root, { recursive: true, force: true });
 }
 
 console.log(`\n结果：${passed} 通过，${failures.length} 失败${failures.length ? ` →\n  - ${failures.join('\n  - ')}` : ''}`);

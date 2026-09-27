@@ -14,6 +14,7 @@
 import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -201,6 +202,26 @@ const version = await probe(port, 2000, token);
 check('CDP /json/version', version?.['Protocol-Version'] === '1.3', `Browser=${version?.Browser}`);
 check('元数据 ws 地址被改写为走代理并带 token', typeof version?.webSocketDebuggerUrl === 'string' && new URL(version.webSocketDebuggerUrl).port === String(port) && version.webSocketDebuggerUrl.includes('token='), version?.webSocketDebuggerUrl);
 
+// 请求头超时（10s）必须在头收全后撤掉，否则已建立的连接（CDP WebSocket 长连接）会在 10s 后被 408 拆掉（F20）。
+{
+  const sock = net.createConnection({ host: '127.0.0.1', port });
+  const chunks = [];
+  let closed = false;
+  sock.on('data', (c) => chunks.push(c));
+  sock.on('close', () => {
+    closed = true;
+  });
+  await new Promise((r) => sock.once('connect', r));
+  sock.write(`GET /json/protocol HTTP/1.1\r\nhost: 127.0.0.1\r\nauthorization: Bearer ${token}\r\nconnection: keep-alive\r\n\r\n`);
+  await sleep(1500);
+  const first = chunks.length > 0 ? chunks[0].toString('latin1') : '';
+  const ok200 = first.startsWith('HTTP/1.1 200');
+  await sleep(11_000);
+  const all = Buffer.concat(chunks).toString('latin1');
+  check('长连接空闲 11s 仍存活、不会收到 408（F20）', ok200 && !closed && !/^HTTP\/1\.1 408/m.test(all), `closed=${closed} first="${first.split('\r\n')[0]}"`);
+  sock.destroy();
+}
+
 // ── 3. 只绑回环 ───────────────────────────────────────────────────────────
 assertLoopback('公开端口只绑 127.0.0.1', port);
 assertLoopback('内部端口只绑 127.0.0.1', info.internalPort);
@@ -336,6 +357,26 @@ if (process.platform === 'linux') {
 } else {
   check('stop 身份校验（仅 linux 有 /proc）', true, `platform=${process.platform}`);
 }
+
+// F23：print() 会 process.exit，restart 曾因此在 stop 之后直接退出 —— 表现为「只停不起」，
+// 实例被停掉却报 stopped:true 就结束了。这里用隔离 root 真实跑一遍 start → restart → stop。
+const rootRestart = mkdtempSync(join(tmpdir(), 'browsersvc-verify-restart-'));
+extraRoots.push(rootRestart);
+const startedFirst = await runCli(['start', `--root=${rootRestart}`, '--port=0', '--idle-ms=120000'], 60_000);
+check('restart 前置：隔离实例可启动', startedFirst.code === 0, `code=${startedFirst.code} ${startedFirst.stdout.slice(0, 120)}`);
+const tokenBeforeRestart = JSON.parse(readFileSync(join(rootRestart, 'service.json'), 'utf8')).token;
+const restartedCli = await runCli(['restart', `--root=${rootRestart}`, '--port=0', '--idle-ms=120000'], 60_000);
+let restartedOut = {};
+try {
+  restartedOut = JSON.parse(restartedCli.stdout);
+} catch {
+  restartedOut = {};
+}
+const tokenAfterRestart = existsSync(join(rootRestart, 'service.json')) ? JSON.parse(readFileSync(join(rootRestart, 'service.json'), 'utf8')).token : null;
+check('restart 真的停旧起新（F23）', restartedCli.code === 0 && restartedOut.restarted === true && restartedOut.stopped === true && restartedOut.started === true, `code=${restartedCli.code} ${restartedCli.stdout.slice(0, 160)}`);
+check('restart 后 token 换新', typeof tokenAfterRestart === 'string' && tokenAfterRestart !== tokenBeforeRestart, `${String(tokenBeforeRestart).slice(0, 8)} → ${String(tokenAfterRestart).slice(0, 8)}`);
+const stoppedRestart = await runCli(['stop', `--root=${rootRestart}`], 60_000);
+check('restart 后的实例可正常 stop', stoppedRestart.code === 0, `code=${stoppedRestart.code}`);
 
 // ── 汇总 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 await new Promise((r) => originServer.close(r));

@@ -63,7 +63,7 @@ DSH_HOME=... dsh plugin add dsh-browser-cdp      # 装进 profile，并写进 ds
 
 ## 验证
 
-仓库 `scripts/verify-provider.mjs` 有 77 项零依赖验收（真实 `browsersvc` + 本地站点）：`cd ../ && node scripts/verify-provider.mjs`。
+仓库 `scripts/verify-provider.mjs` 有 83 项零依赖验收（真实 `browsersvc` + 本地站点）：`cd ../ && node scripts/verify-provider.mjs`。
 
 ## 许可
 

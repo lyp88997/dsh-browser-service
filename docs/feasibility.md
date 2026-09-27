@@ -43,12 +43,12 @@ Playwright connectOverCDP("http://127.0.0.1:9333")
 
 ### L2 DSH 接入：两条路
 **L2a 复用现成插件（半天，0 代码）**：`dsh-browser-tool` 的 `connected` 模式（`DSH_BROWSER_CDP_URL`）直接指向我们的守护进程。
-- 代价：它读的是**进程环境变量** ⇒ 要改容器 env（需要重建容器）；且它自带自己的 `browser` 工具面，不是内置那 33 个。
+- 代价：它读的是**进程环境变量** ⇒ 要改容器 env（需要重建容器）；且它自带自己的 `browser` 工具面，不是内置那 32 个。
 
 **L2b 自写 provider（推荐，3–5 天）**：
 - 入口 ~50 行（抄 `browser-electron/entry.js` 的结构）：`inject = ['browser']`、`Config`（CDP 地址、并发上限、超时、截图目录）、`apply(ctx, config)` 里 `ctx.browser.registerProvider(...)`，并用 `ctx.effect()` 注册 disposer。
 - provider 本体：实现 `dsh-builtin-browser/lib/browser/types.d.ts`（578 行、约 40 个请求/响应接口：navigate / click / type / scroll / key / elementTarget / setValue / check / select / clear / getValue / scrape / fill / wait / screenshot …），每个方法映射到 Playwright 的 1–2 个 API。参考实现 `browser-electron/provider.js` 是 Electron 专用的（1600+ 行，含 host RPC），CDP 直连版会明显更薄。
-- **回报**：内置 `tool-browser` 的 33 个 `browser_*` 工具**全部免费复用**（这正是现在被停用的那套），且配置写在 `cordis.patch.yml` 里 → **热加载生效，不需要动容器 env**。
+- **回报**：内置 `tool-browser` 的 32 个 `browser_*` 工具**全部免费复用**（这正是现在被停用的那套），且配置写在 `cordis.patch.yml` 里 → **热加载生效，不需要动容器 env**。
 - 需要同时 `disabled: true`：`browser-electron`（否则重复 provider，源码注释提到 `BROWSER_DUPLICATE_PROVIDER`）与 `tool-browser` 的替代关系要想清楚——若走 L2b 且复用内置工具，则**保留 `tool-browser`、只关 `browser-electron`**（与现在的配置正好相反）。
 
 ### L3 univer 接入（0 代码；或进阶写代理）
@@ -71,7 +71,7 @@ Playwright connectOverCDP("http://127.0.0.1:9333")
 | 里程碑 | 内容 | 验收（可执行） |
 |---|---|---|
 | M1 | `browsersvc` 守护 + 监管 | `curl 127.0.0.1:<port>/json/version` = Protocol-Version 1.3；两个上下文 cookie 互不可见；kill 后自动重启 |
-| M2 | `browser-cdp` provider 插件（自写）+ 关掉 `browser-electron`，保留 `tool-browser` | 33 个 `browser_*` 工具在守护进程上跑通（含截图、多标签、表单） |
+| M2 | `browser-cdp` provider 插件（自写）+ 关掉 `browser-electron`，保留 `tool-browser` | 32 个 `browser_*` 工具在守护进程上跑通（含截图、多标签、表单） |
 | M3 | univer 指向包装脚本（现状） | `univer_screenshot` 出图；打印 PDF 出文件 |
 | M4（可选） | 给服务加通用 HTTP 面：`/fetch`、`/screenshot`、`/eval`（Moli 风格） | 任何插件不需要懂 CDP 也能用 |
 | M5（进阶） | CDP-over-pipe 代理，让 univer 复用守护进程 | univer 渲染时不再新增浏览器进程 |
@@ -90,7 +90,7 @@ Playwright connectOverCDP("http://127.0.0.1:9333")
 ## 6. 结论与推荐
 
 - **纯技术可行性：高。** 关键机制（单例 + 多会话隔离 + 73ms 接入 + 现成 seam 扩展点）都已实测，不需要魔改 DSH，也不需要 root。
-- **推荐路径：L1 + L2b（3–5 个工作日）**，换来：内置 33 个浏览器工具全部回归、配置热加载、不依赖容器 env、比现状少一份浏览器进程。L2a 是"半天上线但要走 env"的替代；L3 的管线代理留作后续。
+- **推荐路径：L1 + L2b（3–5 个工作日）**，换来：内置 32 个浏览器工具全部回归、配置热加载、不依赖容器 env、比现状少一份浏览器进程。L2a 是"半天上线但要走 env"的替代；L3 的管线代理留作后续。
 - **真正的成本不在"能不能接"，而在长期维护**：provider 要跟着 `types.d.ts` 与内核版本走。如果目标只是"univer 能渲染 + agent 能读页面"，那 Moli / 现状方案更省事；如果目标是"自建可复用、可控、可共享的浏览器底座"，这份方案成立。
 
 > 备注：本文所有 `dsh-univer-office` 行为结论来自其 `lib/index.js`（5.2MB，minified）的关键字取证；seam 结构来自 `dsh-builtin-browser/lib/browser/{types.d.ts,runtime.js,browser-electron/entry.js}`。M5 的管线代理为设计推断，**未实测**。

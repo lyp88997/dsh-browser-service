@@ -84,10 +84,14 @@ async function status(cfg, { quiet = false } = {}) {
 
 const toFlagArgs = (flagsIn) => Object.entries(flagsIn).map(([k, v]) => (v === true ? `--${k}` : `--${k}=${v}`));
 
-async function start(cfg) {
+async function start(cfg, { quiet = false } = {}) {
   ensureRoot(cfg.root);
   const existing = await status(cfg, { quiet: true });
-  if (existing.running && existing.healthy) print({ alreadyRunning: true, ...existing });
+  if (existing.running && existing.healthy) {
+    const info = { alreadyRunning: true, ...existing };
+    if (quiet) return info;
+    print(info);
+  }
 
   const out = openSync(logFile(cfg.root), 'a');
   const child = spawn(process.execPath, [BIN, 'run', ...toFlagArgs(flags)], {
@@ -105,16 +109,32 @@ async function start(cfg) {
     // spawn 出来的 supervisor（pid 相同）且它已经完成了 listen（listening 字段）。
     if (st?.listening === true && st.supervisorPid === child.pid && st.port) {
       const version = await probeVersion(st.port, 2000, st.token);
-      if (version) print({ started: true, pid: st.supervisorPid, browserPid: st.browserPid, port: st.port, browserVersion: version.Browser, protocolVersion: version['Protocol-Version'], kernel: st.kernel, root: cfg.root, logFile: logFile(cfg.root) });
+      if (version) {
+        const info = { started: true, pid: st.supervisorPid, browserPid: st.browserPid, port: st.port, browserVersion: version.Browser, protocolVersion: version['Protocol-Version'], kernel: st.kernel, root: cfg.root, logFile: logFile(cfg.root) };
+        // 成功必须立刻返回：quiet 模式下没有 print 的 process.exit 兜底，否则会一直
+        // 循环到超时，把刚启动好的实例报成失败（F23）。
+        if (quiet) return info;
+        print(info);
+      }
     }
-    if (child.exitCode !== null) print({ started: false, reason: `supervisor exited early (code ${child.exitCode})，见 ${logFile(cfg.root)}` }, 1);
+    if (child.exitCode !== null) {
+      const info = { started: false, reason: `supervisor exited early (code ${child.exitCode})，见 ${logFile(cfg.root)}` };
+      if (quiet) throw Object.assign(new Error(info.reason), { info });
+      print(info, 1);
+    }
   }
-  print({ started: false, reason: `在 ${cfg.startTimeoutMs}ms 内未就绪，见 ${logFile(cfg.root)}` }, 1);
+  const timeout = { started: false, reason: `在 ${cfg.startTimeoutMs}ms 内未就绪，见 ${logFile(cfg.root)}` };
+  if (quiet) throw Object.assign(new Error(timeout.reason), { info: timeout });
+  print(timeout, 1);
 }
 
-async function stop(cfg, { force = false } = {}) {
+async function stop(cfg, { force = false, quiet = false } = {}) {
   const st = readState(cfg.root);
-  if (!st) print({ stopped: true, reason: 'not running' });
+  if (!st) {
+    const info = { stopped: true, reason: 'not running' };
+    if (quiet) return info;
+    print(info);
+  }
   // pid 会被系统复用：动手前先确认这两个 pid 真的是状态文件登记的那两个进程，
   // 否则 SIGKILL 可能落到同 uid 的无关进程上（评审 F3）。
   let warning = null;
@@ -128,7 +148,9 @@ async function stop(cfg, { force = false } = {}) {
     const brw = st.browserPid ? pidCmdline(st.browserPid) : null;
     if (brw !== null && st.internalPort && !brw.includes(`--remote-debugging-port=${st.internalPort}`)) bad.push(`browser(${st.browserPid}) cmdline 不含 --remote-debugging-port=${st.internalPort}：${brw}`);
     if (bad.length) {
-      print({ stopped: false, reason: 'pid 身份校验未通过，未杀任何进程，状态文件已保留（确认无误后用 browsersvc stop --force）', details: bad, stateFile: stateFile(cfg.root) }, 1);
+      const info = { stopped: false, refused: true, reason: 'pid 身份校验未通过，未杀任何进程，状态文件已保留（确认无误后用 browsersvc stop --force）', details: bad, stateFile: stateFile(cfg.root) };
+      if (quiet) return info;
+      print(info, 1);
     }
   }
   const kill = async (pid, sig) => {
@@ -146,7 +168,9 @@ async function stop(cfg, { force = false } = {}) {
   for (let i = 0; i < 30 && isAlive(st.browserPid); i += 1) await sleep(100);
   if (isAlive(st.browserPid)) await kill(st.browserPid, 'SIGKILL');
   rmSync(stateFile(cfg.root), { force: true });
-  print({ stopped: true, supervisorPid: st.supervisorPid, browserPid: st.browserPid, ...(warning ? { warning } : {}) });
+  const info = { stopped: true, supervisorPid: st.supervisorPid, browserPid: st.browserPid, ...(warning ? { warning } : {}) };
+  if (quiet) return info;
+  print(info);
 }
 
 function logs(cfg, flags) {
@@ -181,10 +205,19 @@ try {
     case 'stop':
       await stop(cfg, { force: flags.force === true });
       break;
-    case 'restart':
-      await stop(cfg, { force: flags.force === true }).catch(() => {});
-      await start(cfg);
+    case 'restart': {
+      // print() 会 process.exit：restart 必须用 quiet 模式拿返回值，否则 stop 打印完就
+      // 退出，start 永远不会执行（F23：restart 变成「只停不起」）。
+      const stopped = await stop(cfg, { force: flags.force === true, quiet: true });
+      if (stopped.refused) print({ restarted: false, stopped: false, reason: stopped.reason, details: stopped.details }, 1);
+      try {
+        const started = await start(cfg, { quiet: true });
+        print({ restarted: true, stopped: stopped.stopped === true, ...started });
+      } catch (error) {
+        print({ restarted: false, stopped: true, reason: error?.info?.reason ?? error?.message ?? String(error) }, 1);
+      }
       break;
+    }
     case 'status':
       await status(cfg);
       break;

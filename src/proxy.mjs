@@ -156,6 +156,12 @@ export function createProxy({ listenPort, targetPort, host = '127.0.0.1', token,
         return;
       }
       client.off('data', onData);
+      // 头收全就必须撤掉 10s 的头超时定时器：否则它会在请求成功 10s 后触发 408，
+      // 把已经建立的连接（含 CDP WebSocket 长连接）一起拆掉（F20）。
+      if (headTimer) {
+        clearTimeout(headTimer);
+        headTimer = null;
+      }
       const lines = buffered.subarray(0, split).toString('latin1').split('\r\n');
       const [method, rawPath] = (lines[0] ?? '').split(' ');
       const headers = {};
