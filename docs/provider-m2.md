@@ -12,10 +12,10 @@ browser_* 工具（dsh-builtin-browser/tool-browser）
 
 ## 1. 插件
 
-- 目录：`plugin/`（独立子包，`name: dsh-browser-cdp`，private，不进 npm）。
-- 依赖：`playwright-core`（**不下载浏览器**）+ `@deepseek-ai/schemastery`；peer `@deepseek-ai/cordis`。
+- 目录：`plugin/`（独立子包，`name: dsh-browser-cdp`，作为 DSH 组合包单独分发，见 `plugin/README.md`）。
+- 依赖：`playwright-core`（**不下载浏览器**）+ `@deepseek-ai/schemastery`。
 - `plugin/lib/index.js`：`name='browser-cdp'`、`inject=['browser']`；`apply` 动态 `import('playwright-core')`，失败则只记日志不注册；成功则 `ctx.browser.registerBrowserProvider(provider)`，并用 `ctx.effect` 持有 disposer（热加载不留 stale provider）。
-- `plugin/lib/provider.js`：`createProvider({chromium, BrowserError, config, log, autoStart})`，实现 seam 的 33 个成员。
+- `plugin/lib/provider.js`：`createProvider({chromium, BrowserError, config, log, autoStart})`，实现 seam 的 `BrowserProvider` 全部成员（`open`/`execute`/`snapshot`/`screenshot`/…；契约见 `dsh-builtin-browser/lib/browser/types.d.ts`）。
 - `plugin/lib/dom.js`：注入页面的纯函数（snapshot/a11y/content/scrape/fillForm/challenge 检测）。**注入函数不能引用任何外部作用域**（序列化后不存在）。
 
 配置项（`Config`，全部有默认值）：`providerId='cdp-daemon'`、`cdpUrl='http://127.0.0.1:9333'`、`connectTimeoutMs`、`actionTimeoutMs`、`navigationTimeoutMs`、`lookupTimeoutMs`、`snapshotMaxElements`、`contentMaxChars`、`viewportWidth/Height`、可选 `autoStartCommand`。

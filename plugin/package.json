@@ -1,6 +1,6 @@
 {
   "name": "dsh-browser-cdp",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "DSH browser provider backed by a self-hosted CDP browser service (browsersvc): reuses the built-in browser_* tool face",
   "license": "MIT",
   "type": "module",
@@ -50,13 +50,5 @@
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1",
     "playwright-core": "^1.49.0"
-  },
-  "peerDependencies": {
-    "@deepseek-ai/cordis": ">=4.0.1 <5"
-  },
-  "peerDependenciesMeta": {
-    "@deepseek-ai/cordis": {
-      "optional": true
-    }
   }
 }

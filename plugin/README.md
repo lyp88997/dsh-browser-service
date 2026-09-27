@@ -14,8 +14,9 @@ browser_* 工具（内置 tool-browser）
 
 ## 依赖
 
-- DSH ≥ 0.1.5（提供 `ctx.browser` seam 与 `tool-browser`）
+- DSH ≥ 0.1.5
 - Node `^22.19.0 || >=24.0.0`
+- **`dsh-builtin-browser` 组合包**：`ctx.browser` seam 与 33 个 `browser_*` 工具都由它提供（DSH 自身不含）。本包 `inject = ['browser']`，patch 里有两条按 id 覆盖它插入的行 —— 所以它有**安装顺序**要求，见下。
 - 运行时依赖：`playwright-core`（**不下载浏览器**，只做 CDP 客户端）、`@deepseek-ai/schemastery`
 - 一个已起的 `browsersvc`（找内核、起守护进程的活由它做，见仓库根 README）
 
@@ -25,13 +26,32 @@ browser_* 工具（内置 tool-browser）
 
 ### A. 作为 bundle（推荐）
 
-把本包放进 profile 依赖，让它自带的 `cordis.patch.yml` 生效：
+`dsh plugin --profile <name> <args>` 只是在 profile 目录里转发给 pnpm，所以 `add` 的既可以是包名，也可以是本地 tarball（官方文档推荐的「免构建授权」交付形式）：
 
 ```bash
-DSH_HOME=... dsh plugin add dsh-browser-cdp      # 装进 profile，并写进 dsh.profile.bundles
-# 或者手工：在 $DSH_HOME/profiles/web/package.json 的 dependencies 加本包，
-#          由 dsh-config-manager 的 reconcileBundles 补进 dsh.profile.bundles
+dsh plugin --profile <name> add dsh-builtin-browser          # 1) 先装 seam 包
+dsh plugin --profile <name> add ./dsh-browser-cdp-0.3.3.tgz  # 2) 再装本包（追加到 dsh.profile.bundles 末尾）
+dsh --profile <name> --dump-config | grep -E 'browserProvider|patched by|not found'
+# 期望：出现 "# == dsh-builtin-browser, patched by dsh-browser-cdp" 与 browserProvider: cdp-daemon，且没有 not found
 ```
+
+**顺序是硬要求。** 官方层顺序是 `dsh.profile.bundles` 按列表顺序叠加、后层按行胜出，而本包 patch 的第 2、3 条覆盖的是 `dsh-builtin-browser` 插入的行。本包若排在它前面，loader 只会打印
+
+```
+dsh: [dsh-browser-cdp] patch: entry "browser" not found
+dsh: [dsh-browser-cdp] patch: entry "browser-electron" not found
+```
+
+并静默丢掉这两条 —— seam 仍选内置 Electron provider，等于「装上了但没生效」。装反了这样恢复（`remove` 会同时移除依赖与 `dsh.profile.bundles` 里的层，`add` 追加到末尾）：
+
+```bash
+dsh plugin --profile <name> remove dsh-browser-cdp
+dsh plugin --profile <name> add ./dsh-browser-cdp-0.3.3.tgz
+```
+
+手工等价做法：在 `$DSH_HOME/profiles/<name>/package.json` 的 `dependencies` 里加本包，由 dsh-config-manager 的 `reconcileBundles` 按依赖顺序补进 `dsh.profile.bundles`（追加在尾部）。
+
+> 本包**不**把 `dsh-builtin-browser` 写进自己的 `dependencies`/`peerDependencies`：`reconcileBundles` 只看 profile 自己声明的依赖，间接依赖不会进 `dsh.profile.bundles`，那样只会装下包、不激活层。
 
 ### B. 手工 patch
 
@@ -63,7 +83,8 @@ DSH_HOME=... dsh plugin add dsh-browser-cdp      # 装进 profile，并写进 ds
 
 ## 验证
 
-仓库 `scripts/verify-provider.mjs` 有 86 项零依赖验收（真实 `browsersvc` + 本地站点）：`cd ../ && node scripts/verify-provider.mjs`。
+- 插件行为：仓库 `scripts/verify-provider.mjs` 有 86 项零依赖验收（真实 `browsersvc` + 本地站点）：`cd ../ && node scripts/verify-provider.mjs`。
+- **打包/安装路径（官方文档流程）**：仓库 `scripts/verify-bundle.mjs` 在一次性隔离 `DSH_HOME` 里真实执行 `dsh plugin --profile … add <tgz>` → `--dump-config` → `remove`，断言「层已追加 / 三条 patch 行生效 / 顺序装反会报 `entry "browser" not found` / remove 同时清掉依赖与层」，且不碰你的默认 profile。
 
 ## 许可
 

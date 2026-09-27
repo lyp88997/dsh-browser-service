@@ -5,7 +5,17 @@
 #   2) 让 browser seam 选中它（覆盖内置 Electron provider 的默认选择）
 #   3) 关掉内置 Electron provider（服务器上无 GUI 库/沙箱，用不了）
 #
-# 前提：本机的 browsersvc 已起（见 README §部署），或给上面的 insert 补 autoStartCommand 让它懒拉起。
+# 前提一：`browser` / `browser-electron` / `tool-browser` 三行由 **dsh-builtin-browser**
+#   这个组合包插入（DSH 自身不含它们），本包第 2、3 条是按 id 覆盖它的行，
+#   因此 dsh.profile.bundles 里 **dsh-builtin-browser 必须排在本包之前**。
+#   顺序反了不会报错，只会打印 `patch: entry "browser" not found` 并静默丢掉第 2、3 条，
+#   于是 seam 仍选内置 Electron provider、插件等于没装。安装顺序（先装 seam 包，再装本包）：
+#     dsh plugin --profile <name> add dsh-builtin-browser
+#     dsh plugin --profile <name> add ./dsh-browser-cdp-<version>.tgz
+#   校验（应无 `entry "browser" not found`）：
+#     dsh --profile <name> --dump-config | grep -E 'browserProvider|patched by'
+#
+# 前提二：本机的 browsersvc 已起（见 README §部署），或给上面的 insert 补 autoStartCommand 让它懒拉起。
 # 注意：若你的 profile patch 里已经手写过同样三条，不要再让本包进 dsh.profile.bundles，否则 insert 会重复。
 - insert:
     - id: browser-cdp
