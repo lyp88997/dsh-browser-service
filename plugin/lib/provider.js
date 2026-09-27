@@ -19,10 +19,19 @@ import { collectA11y, collectContent, collectScrape, collectSnapshot, detectChal
  * 未配置 autoStartCommand 时的默认自启命令：用本包自带的守护进程 CLI（bin/browsersvc.mjs）。
  * 「一个包装完」——照 README 只装本包，端点不通时插件自己就能把守护进程拉起来。
  * 包被拆走或 bin 缺失时返回 undefined（退化成「请先运行 browsersvc start」的报错）。
+ *
+ * 配置里的 `idleMs` 会被透传成 `--idle-ms=<n>`（P1），这样「空闲多久回收那约 600 MB 的常驻
+ * 浏览器」直接改 DSH 配置即可，不用手写 autoStartCommand。数值按 src/config.mjs 的 LIMITS
+ * （1000..24h）夹住，越界只会退化到守护进程默认值，不会让自启直接失败。
  */
-export function defaultAutoStartCommand() {
+export function defaultAutoStartCommand(config = {}) {
   const bin = fileURLToPath(new URL('../../bin/browsersvc.mjs', import.meta.url));
-  return existsSync(bin) ? `node ${JSON.stringify(bin)} start` : undefined;
+  if (!existsSync(bin)) return undefined;
+  const raw = Number(config?.idleMs);
+  const idle = Number.isFinite(raw) && raw > 0
+    ? ` --idle-ms=${Math.min(24 * 3600_000, Math.max(1000, Math.floor(raw)))}`
+    : '';
+  return `node ${JSON.stringify(bin)} start${idle}`;
 }
 
 const DOWNLOAD_DIR_NAMES = ['Downloads', '下载', '下載'];
@@ -46,6 +55,7 @@ export function defaultDownloadDir() {
 
 const SESSION_UNKNOWN = 'BROWSER_SESSION_UNKNOWN';
 const TAB_UNKNOWN = 'BROWSER_TAB_UNKNOWN';
+const TAB_LIMIT = 'BROWSER_TAB_LIMIT';
 const TARGET_INVALID = 'BROWSER_TARGET_INVALID';
 const ATTACH_FAILED = 'BROWSER_CDP_ATTACH_FAILED';
 
@@ -82,6 +92,15 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
   const downloadDir = resolve(
     typeof config.downloadDir === 'string' && config.downloadDir ? config.downloadDir : defaultDownloadDir(),
   );
+
+  // P1：单个会话的标签页硬上限。无头内核里每个标签页是一个独立渲染进程（实测约 +93 MB），
+  // 长任务随手十几开就能把 2.5 GiB 的容器顶满；这里在新增标签的唯一入口封口，越界直接报错
+  // （BROWSER_TAB_LIMIT）而不是静默占内存。默认 5，夹在 1..50（配 0 或负数按 1 处理）。
+  const maxTabs = (() => {
+    const raw = Number(config.maxTabs);
+    if (!Number.isFinite(raw)) return 5;
+    return Math.min(50, Math.max(1, Math.floor(raw)));
+  })();
 
   class CdpProvider {
     id = config.providerId;
@@ -160,7 +179,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
         this.#conn = await attach();
       } catch (first) {
         // 没配 autoStartCommand 就用本包自带的 binsvc（一个包装完，装完即可自启）。
-        const autoStartCommand = config.autoStartCommand ?? defaultAutoStartCommand();
+        const autoStartCommand = config.autoStartCommand ?? defaultAutoStartCommand(config);
         if (!autoStartCommand || this.#autoStarted) {
           throw fail(`browser: 无法连接 CDP 端点 ${url}（${describe(first)}）；请先运行 browsersvc start`, ATTACH_FAILED, first);
         }
@@ -422,6 +441,28 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
       this.#sessions.delete(session.id);
       session.closed = true;
       await session.context.close().catch(() => {});
+      await this.#releaseIfIdle();
+    }
+
+    /**
+     * 最后一个会话也关掉之后，主动断开与守护进程的 CDP 连接（P1）。
+     *
+     * 守护进程用「代理端口上的客户端连接数」判断有没有人在用（src/daemon.mjs：
+     * `proxy.connections === 0 && Date.now() - lastActivityAt >= cfg.idleMs` 才自杀）。只要本进程
+     * 还挂着那条 CDP WebSocket，那个约 600 MB 的常驻浏览器就永远不会被回收。断开之后守护进程
+     * 才能在 idleMs 到点时退出；下一次调用照常走自启/重连（F25），加的只是一次冷启动。
+     *
+     * `browser.close()` 对 `connectOverCDP` 拿到的连接只断开 WebSocket，不杀浏览器进程也不会
+     * 让代理的连接计数与内核失配（已实测：daemon 仍 healthy，browserPid 不变）。
+     */
+    async #releaseIfIdle() {
+      if (this.#sessions.size > 0) return;
+      const conns = [...this.#conns];
+      if (conns.length === 0) return;
+      this.#conns.clear();
+      this.#conn = null;
+      for (const conn of conns) await conn?.close?.().catch(() => {});
+      note('info', 'browser-cdp: 已无会话，主动断开 CDP 连接（守护进程将在空闲 idleMs 后回收内存）');
     }
 
     async dispose() {
@@ -443,7 +484,29 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
       });
     }
 
+    /**
+     * 新增标签页的唯一入口（`browser_open` 的 `newTab`）。超过 maxTabs 就报 BROWSER_TAB_LIMIT：
+     * 报错里带上现有标签与 URL，让调用方能自己决定关哪个，而不是盲试。
+     */
     async #newTab(session) {
+      if (session.tabs.size >= maxTabs) {
+        const existing = [...session.tabs].map(([tabId, page]) => {
+          let url = '';
+          if (!page.isClosed()) {
+            try {
+              url = page.url();
+            } catch {
+              url = '';
+            }
+          }
+          return url ? `${tabId} ${url.length > 60 ? `${url.slice(0, 60)}…` : url}` : tabId;
+        }).join('、');
+        throw fail(
+          `browser: 标签页数量已达上限 maxTabs=${maxTabs}（现有：${existing}）`
+          + '——先用 browser_close_tab 关掉不用的标签，或用 browser_reset 清空本会话',
+          TAB_LIMIT,
+        );
+      }
       const page = await session.context.newPage();
       session.active = this.#addTab(session, page);
       return page;

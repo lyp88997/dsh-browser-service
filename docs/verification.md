@@ -4,7 +4,7 @@
 
 ```bash
 node scripts/verify-daemon.mjs      # M1 守护进程 + CLI 防御：35/35
-node scripts/verify-provider.mjs    # M2 provider：95 通过，0 失败
+node scripts/verify-provider.mjs    # M2 provider：110 通过，0 失败
 node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）：23/23
 ```
 
@@ -14,7 +14,7 @@ node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程
 
 **`verify-bundle.mjs`（23 项）** —— 在一次性隔离 `DSH_HOME`（`/tmp`）里真实执行官方安装/移除命令：交付物里只有一个包 → `add <tgz>` 追加依赖与层 → `--dump-config` 里本包层挂出 `browser`（`browserProvider: cdp-daemon`）、`tool-browser` 与 `browser-cdp`，且**三行都没有 not found** → 默认自启命令指向装进来的 `bin/browsersvc.mjs` → `./browser` / `./tool-browser` 转出口的导出键与 `dsh-builtin-browser` 源模块**完全一致** → `remove` 同时清掉依赖与层。不碰默认 profile。
 
-**`verify-provider.mjs`（95 项）** —— 自己起本地站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖 session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back`/`forward`/`reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`、连接被换掉后会话复活（F22）、自启开关复位（F25）、保存路径准入、默认保存目录（D1：`XDG_DOWNLOAD_DIR` → 本地化 `Downloads` → `~/Downloads` 回落、目录首次写入时建出来、未配置时默认目录之外一律拒绝）、代理对截断。
+**`verify-provider.mjs`（110 项）** —— 自己起本地站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖 session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back`/`forward`/`reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`、连接被换掉后会话复活（F22）、自启开关复位（F25）、保存路径准入、默认保存目录（D1：`XDG_DOWNLOAD_DIR` → 本地化 `Downloads` → `~/Downloads` 回落、目录首次写入时建出来、未配置时默认目录之外一律拒绝）、代理对截断、**P1：`maxTabs` 上限与拒绝后不留半开页、无会话时释放连接（守护进程按 `idleMs` 回收 + 自愈）、配置默认值**。
 
 **`verify-daemon.mjs`（35 项）** —— 只用 Node 内置能力，自己起本地源。凭据门一段额外覆盖「同一条连接上的后续请求不免检」（F27），F20 改在真实 CDP WebSocket 上验证。完整输出：
 

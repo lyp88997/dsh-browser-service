@@ -30,9 +30,20 @@ export const Config = Schema.object({
   snapshotMaxElements: Schema.number().default(200),
   /** 单次内容读取的最大字符数。 */
   contentMaxChars: Schema.number().default(200_000),
+  /**
+   * 单个会话允许的最大标签页数（默认 5，夹在 1..50）。每个标签页在无头内核里是一个独立渲染
+   * 进程（实测约 +93 MB），超过上限时 `browser_open {newTab:true}` 报 `BROWSER_TAB_LIMIT`。
+   */
+  maxTabs: Schema.number().default(5),
   /** 会话视口尺寸（坐标点击的空间）。 */
   viewportWidth: Schema.number().default(1440),
   viewportHeight: Schema.number().default(900),
+  /**
+   * 本包自启守护进程时的空闲回收窗口（毫秒，默认 5 分钟，值会夹到 1000..24h）。最后一个会话
+   * 关闭后插件会主动断开 CDP 连接，守护进程再空闲这么久就退出、把约 600 MB 还给系统；下次
+   * 调用自动重新拉起。仅在使用默认自启命令时生效（自定义 `autoStartCommand` 请自己带 `--idle-ms`）。
+   */
+  idleMs: Schema.number().default(300_000),
   /**
    * 可选：CDP 端点不可用时执行一次的自启命令。
    * 默认（不配置）用本包自带的 `bin/browsersvc.mjs start`，即装完本包就能自启（一个包装完）。

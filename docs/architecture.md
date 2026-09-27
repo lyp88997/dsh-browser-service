@@ -40,10 +40,10 @@ patch 做四件事：insert 接缝 `browser`（选 `cdp-daemon`）、insert `too
 
 ## 3. 验收
 
-### 3.1 provider 层（95 项，零依赖、不碰外网）
+### 3.1 provider 层（110 项，零依赖、不碰外网）
 
 ```bash
-node scripts/verify-provider.mjs      # 结果：95 通过，0 失败
+node scripts/verify-provider.mjs      # 结果：110 通过，0 失败
 ```
 
 自己起本地 http 站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖：`available`、session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back/forward/reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`、保存路径准入（F1）与默认保存目录（D1）、掉线后会话复活（F22）、默认自启命令。

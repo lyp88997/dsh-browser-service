@@ -27,8 +27,8 @@
 ```bash
 dsh plugin --profile web add dsh-browser-service@latest
 # 也可以钉版本 / 离线分发（同一个包）：
-#   dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.4.4/dsh-browser-service-0.4.4.tgz
-#   dsh plugin --profile web add ./dsh-browser-service-0.4.4.tgz
+#   dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.5.0/dsh-browser-service-0.5.0.tgz
+#   dsh plugin --profile web add ./dsh-browser-service-0.5.0.tgz
 
 # 然后重启 DSH，再校验（应出现 browserProvider: cdp-daemon 与本包层，且本包三行没有 not found）：
 dsh --profile web --dump-config | grep -E 'browserProvider|# == dsh-browser-service|not found'
@@ -47,7 +47,7 @@ dsh --profile web --dump-config | grep -E 'browserProvider|# == dsh-browser-serv
 
 - **别用旧名 `dsh-browser-cdp` 当裸包名**（v0.4.0 之前子包的名字）：npm 上的 `dsh-browser-cdp` 是别人的同名包（drscrewdriver，0.17.4），写了就装到别人家。本包自 2026-09-27 起以 `dsh-browser-service` 发布（当前 0.4.1）。
 - 组合自动做四件事：插入接缝 `browser`（选 `cdp-daemon`）、插入 `tool-browser`、插入 `browser-cdp` provider、关掉内置 `browser-electron` 与 `dsh-playwright-browser`（后者自带 10 个与内置**同名**的 `browser_*` 工具，两个 provider 的工具面不能共存）。后两个 id 在本包单独安装的环境里不存在，loader 只打印一条 not found 提示，不影响组合。
-- `browsersvc` 默认空闲 15 分钟自杀（`--idle-ms`，上限 24 小时）；DSH 侧仍在的话，下次调用浏览器会自动把它拉回来（F25，见 [CHANGELOG](https://github.com/lyp88997/dsh-browser-service/blob/main/CHANGELOG.md)）。
+- `browsersvc` 默认空闲 15 分钟自杀（`--idle-ms`，上限 24 小时）；插件自启时默认用 5 分钟（配置键 `idleMs`）。**最后一个会话关闭后插件会主动断开 CDP 连接**（P1），守护进程才可能真的空闲退出；下一次调用浏览器会自动把它拉回来（F25，见 [CHANGELOG](https://github.com/lyp88997/dsh-browser-service/blob/main/CHANGELOG.md)）。
 
 > ⚠️ 改完**必须重启 DSH**（插件在 boot 时 import，热重载不可靠）：运行中的完整 web profile 上 `patchReload: live` 会静默回滚（进程 stdout 归 docker，看不到报错），干净进程里 boot 完全正常。
 >
@@ -142,7 +142,7 @@ node bin/browsersvc.mjs start \
 | `browser_a11y` | 读无障碍树（语义角色 / 名称 / 状态，穿透同源 iframe 与 shadow root）——理解页面结构的首选 |
 | `browser_snapshot` | 可交互元素快照（带编号，供视觉/文本驱动） |
 | `browser_content` | 取页面内容：`html` / `markdown` / `txt` / `json`，可按选择器限定范围 |
-| `browser_scrape` | 列表页结构化提取：给容器选择器 + 字段映射（`sel@attr`，`a@href` 取绝对地址） |
+| `browser_scrape` | 列表页结构化提取：给容器选择器 + 字段映射（`sel@attr`，`a@href` 取绝对地址）。**`item` 必须是容器**：字段选择器是在 `item` **内部**查找的，所以 `item: img` + `img@src` 取不到值，要写 `item: body` |
 | `browser_screenshot` | 截屏（PNG/JPEG、fullPage、等比缩小、可落盘） |
 | `browser_get_value` | 读单个输入/文本域/下拉/可编辑区的当前值 |
 
@@ -196,8 +196,10 @@ node bin/browsersvc.mjs start \
 | `lookupTimeoutMs` | `5000` | 元素查找与 scrape 的等待预算 |
 | `snapshotMaxElements` | `200` | `browser_snapshot` 返回的元素上限 |
 | `contentMaxChars` | `200000` | `browser_content` 截断长度 |
+| `maxTabs` | `5` | 单个会话允许的最大标签页数（夹在 `1..50`）。超过时 `browser_open {newTab:true}` 报 `BROWSER_TAB_LIMIT`——每个标签页是一个独立渲染进程，实测约 +93 MB |
 | `viewportWidth` / `viewportHeight` | `1440` / `900` | 新页面视口（坐标点击的空间） |
-| `autoStartCommand` | 空 = 用**本包自带**的 `bin/browsersvc.mjs start` | 可选：首次用浏览器时执行的命令；换端口/内核才需要填 |
+| `idleMs` | `300000`（5 分钟） | 本包**自启**守护进程时的空闲回收窗口（夹在 `1000..86400000`）。最后一个会话关闭后插件主动断开连接，守护进程再空闲这么久就退出、把内存还给系统。仅在使用默认 `autoStartCommand` 时生效 |
+| `autoStartCommand` | 空 = 用**本包自带**的 `bin/browsersvc.mjs start` | 可选：首次用浏览器时执行的命令；换端口/内核才需要填（自己填的话，`idleMs` 不会自动带上，要自己写 `--idle-ms`） |
 | `autoStartTimeoutMs` | `60000` | `autoStartCommand` 的执行超时 |
 | `cdpToken` | 空 | 一般不用填：留空时自动读 `<DSH_BROWSER_SVC_ROOT 或 $DSH_HOME/browser-service>/service.json` 里的 `token`（每次 attach 重读，守护进程重启换 token 也能跟上）。只有指向自建/非 browsersvc 的 CDP 端点时才需要显式给 |
 | `downloadDir` | 系统 Downloads 目录 | 截图/下载的 `savePath` 必须落在该目录内。不配置时与内置 provider 同语义：`XDG_DOWNLOAD_DIR`（存在才用）→ 家目录下存在的 `Downloads`/`下载`/`下載` → `~/Downloads`（首次写入时建出来）。要存进工作区/别处就显式填一个目录 |
@@ -238,11 +240,12 @@ node bin/browsersvc.mjs start \
 4. **改插件代码或 profile patch 后必须重启 DSH**：完整 web profile 上 `patchReload: live` 会静默回滚（实测：探针条目 `applied` 后 6–7 ms 被 `disposed`，插件的 `apply` 根本没被调用；最小 profile 里热重载正常）。
 5. **插件与 `browsersvc` 必须同版本升级**：v0.3.0 起公开端口要 Bearer token，旧插件 + 新守护进程会 401（F19 修的是冷启动重读 token）。
 6. **工具面取决于依赖版本**：33 个 `browser_*` 来自 `dsh-builtin-browser`，上游增删工具时本包跟着变（本包只保证转出口形状一致、并把它写进验收）。
-7. **守护进程会空闲自杀**（默认 15 分钟；`--idle-ms` 允许 `1000..86400000`，即最长 24 小时）。DSH 侧下一次调用会自动把它拉回（F25），所以这是省内存的设计而不是故障；连「被下次调用拉起」也不想要，就 `dsh plugin remove` 卸载本包。
+7. **守护进程会空闲自杀**（守护进程自身默认 15 分钟；本包自启默认 5 分钟，见配置表 `idleMs`；`--idle-ms` 允许 `1000..86400000`，即最长 24 小时）。**只有代理端口上没有任何连接时才会空闲**：所以 0.5.0 起插件在最后一个会话关闭后会**主动断开** CDP 连接——否则那条约 600 MB 的常驻浏览器永远不回收（P1）。DSH 侧下一次调用会自动把它拉回（F25），所以这是省内存的设计而不是故障；连「被下次调用拉起」也不想要，就 `dsh plugin remove` 卸载本包。
 8. **`browser_execute` 传的是表达式语境**：传函数体会被当表达式求值并报 `page.evaluate: SyntaxError: Illegal return statement`，请传 `(...) => {...}` 或纯表达式。
 9. **`browser_fill` 的 `fields[].selector` 是作用域不是定位器**：定位某个控件请用 `browser_click` / `browser_set_value` / `browser_check` 的 `target`。
 10. **macOS / Windows 未测试**；仅 Linux（Debian 12 容器）实测。
 11. **截图/下载默认只能写进系统 Downloads 目录**（`XDG_DOWNLOAD_DIR` → 家目录下存在的 `Downloads`/`下载`/`下載` → `~/Downloads`，对齐内置 provider）。要写进工作区或别处，就在 profile patch 的 `browser-cdp` 行 `config` 里显式配 `downloadDir`（patch **整行替换** `config`，覆盖时该行其它键要重述）。
+12. **单个会话默认最多 5 个标签页**（配置 `maxTabs`，夹 `1..50`）。每个标签页是独立渲染进程，实测约 +93 MB；超限时 `browser_open {newTab:true}` 报 `BROWSER_TAB_LIMIT`，文案会列出当前标签，用 `browser_close_tab` 关掉不用的、或 `browser_reset_session` 清空本会话（P1）。
 
 ## 安全模型
 
@@ -262,17 +265,17 @@ node bin/browsersvc.mjs start \
 
 ```bash
 node scripts/verify-daemon.mjs      # M1 守护进程 + CLI 防御：35/35
-node scripts/verify-provider.mjs    # M2 provider：95 通过，0 失败
+node scripts/verify-provider.mjs    # M2 provider：110 通过，0 失败
 node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）：23/23
 ```
 
 | 套件 | 项数 | 覆盖 |
 |---|---|---|
 | `verify-daemon.mjs` | **35/35** | 守护进程启停/重启、token 与 401/403 凭据门、只绑回环、上下文隔离、崩溃重启、空闲退出、配置校验、启动失败不留孤儿、`stop` 身份校验、同一连接上的后续请求不免检（F27） |
-| `verify-provider.mjs` | **95 通过 / 0 失败** | 33 个工具的行为与边界（含 `execute`/`a11y`/`scrape`/`form`/`screenshot`/`download`/`auth`）、会话隔离与复活、保存路径准入与默认保存目录（D1）、代理对截断 |
+| `verify-provider.mjs` | **110 通过 / 0 失败** | 33 个工具的行为与边界（含 `execute`/`a11y`/`scrape`/`form`/`screenshot`/`download`/`auth`）、会话隔离与复活、保存路径准入与默认保存目录（D1）、代理对截断、**P1：`maxTabs` 上限（拒绝后不留半开页）、无会话时释放连接（守护进程按 `idleMs` 回收 + 自愈）、配置默认值** |
 | `verify-bundle.mjs` | **23/23** | 在一次性隔离 `DSH_HOME` 里跑官方 `add` → `--dump-config` → 转出口形状比对 → `remove`，不碰默认 profile |
 
-完整输出（32 条 PASS 原文、DSH 内端到端日志、npm 短命令实测、未自动化覆盖的部分）见 [`docs/verification.md`](https://github.com/lyp88997/dsh-browser-service/blob/main/docs/verification.md)。
+完整输出（35 条 PASS 原文、DSH 内端到端日志、npm 短命令实测、未自动化覆盖的部分）见 [`docs/verification.md`](https://github.com/lyp88997/dsh-browser-service/blob/main/docs/verification.md)。
 
 ## FAQ
 
@@ -284,6 +287,12 @@ node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程
 
 **报 `browser: 无法连接 CDP 端点 … ECONNREFUSED`？**
 守护进程空闲自杀了；下一次调用会自动拉回（F25）。一直失败就手动 `node bin/browsersvc.mjs start` 看 `logs`。
+
+**浏览器占着约 600 MB 内存，什么时候还回来？**
+① 单个会话超过 `maxTabs`（默认 5）会报 `BROWSER_TAB_LIMIT` 而不是继续吃内存；② 最后一个会话关闭后插件主动断开连接，守护进程再空闲 `idleMs`（默认 5 分钟）就退出——内核、渲染进程一起收走；③ 想立刻收，`node bin/browsersvc.mjs stop`。会话期间不会回收（这是为了不每次都冷启动 3 秒）。
+
+**`browser_open {newTab:true}` 报 `BROWSER_TAB_LIMIT`？**
+本会话标签页到上限了（默认 5）。文案里有当前标签列表；`browser_close_tab` 关掉不用的，或 `browser_reset_session` 清空；确需更多就调大配置 `maxTabs`（上限 50，每个约 +93 MB）。
 
 **要不要单独装 `dsh-builtin-browser`？**
 不要。它是本包的依赖，同时当组合包会让 `browser`/`tool-browser` 插两次、33 个工具重名。已装过就 `dsh plugin --profile <name> remove dsh-builtin-browser`。
@@ -344,7 +353,7 @@ npm publish --access public
 - **单一交付物**：根 `package.json` 里声明 `"dsh": {"bundle": {"patch": "./plugin/cordis.patch.yml"}}`，同一个包同时提供 `bin/browsersvc.mjs`（守护进程 CLI）、`plugin/lib/*`（provider）与 `plugin/shims/*`（接缝/工具面转出口）。装完这一个包，`--dump-config` 里就出现 `# == dsh-browser-service` 层、`browser`（`browserProvider: cdp-daemon`）、`tool-browser`、`browser-cdp` 四行。
 - 依赖：`dsh-builtin-browser`（提供 seam 与 33 个工具，转出后面向 profile 生效）、`playwright-core`（只做 CDP 客户端，**不下载浏览器**）、`@deepseek-ai/schemastery`（配置 schema）。它们由 profile 的 pnpm 解析；接缝包需要的宿主 peer（`@deepseek-ai/cordis` / `dsh-tools` / `dsh-llm` …）由 DSH 在 boot 时建立的 `$DSH_HOME/profiles/node_modules/@deepseek-ai/*`（240 个入口）提供——profile 内任何包向上查找都能命中，所以不需要把它们写进本包依赖。
 - 每个版本在 GitHub Release 挂两份资产：**不带版本号**的 `dsh-browser-service.tgz`（供 `releases/latest/download/dsh-browser-service.tgz` 这类**永不过期**的固定地址引用——插件市场条目就用它）与带版本号的 `dsh-browser-service-<v>.tgz`（文档里建议钉版本用）。
-- `dist/` 已 gitignore。**npm 已发布**：`dsh-browser-service@0.4.0`（首版）、`@0.4.1`、`@0.4.2`、`@0.4.3`、`@0.4.4`（均 2026-09-27；`npm view dsh-browser-service` 可见 tarball 与 shasum）。0.4.1 与 0.4.2 是**只为刷新 npm 页面上的 README**（前者修 0.4.0 tarball 里的发布前文本，后者带上对齐生态后的 README），这两版**代码分别与 0.4.0 / 0.4.1 完全相同**；0.4.3 起有真实代码变更（默认 `downloadDir` 对齐内置 provider，见 CHANGELOG 的 D1），0.4.4 修掉代理的 keep-alive 免检缺陷（F27）。
+- `dist/` 已 gitignore。**npm 已发布**：`dsh-browser-service@0.4.0`（首版）、`@0.4.1`、`@0.4.2`、`@0.4.3`、`@0.4.4`、`@0.5.0`（2026-09-27；`npm view dsh-browser-service` 可见 tarball 与 shasum）。0.4.1 与 0.4.2 是**只为刷新 npm 页面上的 README**（前者修 0.4.0 tarball 里的发布前文本，后者带上对齐生态后的 README），这两版**代码分别与 0.4.0 / 0.4.1 完全相同**；0.4.3 起有真实代码变更（默认 `downloadDir` 对齐内置 provider，见 CHANGELOG 的 D1），0.4.4 修掉代理的 keep-alive 免检缺陷（F27），0.5.0 收口资源问题（`maxTabs` 上限 + 无会话时释放连接，见 CHANGELOG 的 P1）。
 - 踩坑：发布 token 必须是勾了 **Bypass 2FA** 的 granular token 且权限为 Read and write，否则 `npm publish` 报 `403 Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages`。旧名 `dsh-browser-cdp` 不能用：npm 上已被 drscrewdriver 的同名包占用（0.17.4）。
 - 官方文档提到的 `dsh.engines` / `dsh.compatibility` 元数据本包**没写**：宿主只认 `dsh.bundle`（`@deepseek-ai/dsh-package-manifest` 的 `DshManifest` 里没有这两个字段），它们只被插件市场的发现逻辑读取，宿主既不读也不校验。
 
@@ -353,7 +362,7 @@ npm publish --access public
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | **M1** | 守护进程 + 回环代理 + 空闲回收 + 崩溃重启 + 35 项验收 | ✅ 完成 |
-| **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerBrowserProvider`），复用接缝包的 33 个 `browser_*` 工具 | ✅ 完成（95 项 + DSH 内端到端） |
+| **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerBrowserProvider`），复用接缝包的 33 个 `browser_*` 工具 | ✅ 完成（110 项 + DSH 内端到端） |
 | **M6** | 代码审查 18 条缺陷修复（F1–F18） | ✅ 完成（v0.3.0 → v0.3.3） |
 | **M7** | 「一个包装完」：单一交付物，接缝与工具面由依赖 `dsh-builtin-browser` 转出 | ✅ 完成（v0.4.0） |
 
@@ -361,8 +370,8 @@ npm publish --access public
 
 ## 更新记录
 
-- **[CHANGELOG.md](https://github.com/lyp88997/dsh-browser-service/blob/main/CHANGELOG.md)** —— v0.4.4 / 0.4.3 / 0.4.2 / 0.4.1 / 0.4.0 / 0.3.3 / 0.3.2 / 0.3.1 / 0.3.0，含每条真实缺陷（F1–F27、B1–B4、U1–U6、D1）的复现与修复。
-- 摘要：`0.4.4` 修掉代理 keep-alive 免检（F27）；`0.4.3` 默认 `downloadDir` 对齐内置 provider（系统 Downloads，保存路径默认就有范围）；`0.4.2` 按热门插件共性重写 README（纯文档，代码同 0.4.1）；`0.4.1` 修正 npm 页面上的 README（代码同 0.4.0）；`0.4.0` 合并成单一交付物（一个包装完）；`0.3.0`–`0.3.3` 代码审查与按官方文档核对打包（26 条修复）。
+- **[CHANGELOG.md](https://github.com/lyp88997/dsh-browser-service/blob/main/CHANGELOG.md)** —— v0.5.0 / 0.4.4 / 0.4.3 / 0.4.2 / 0.4.1 / 0.4.0 / 0.3.3 / 0.3.2 / 0.3.1 / 0.3.0，含每条真实缺陷（F1–F27、P1、B1–B4、U1–U6、D1）的复现与修复。
+- 摘要：`0.5.0` 资源收口（`maxTabs` 上限 + 无会话时释放连接，让守护进程能按 `idleMs` 回收）；`0.4.4` 修掉代理 keep-alive 免检（F27）；`0.4.3` 默认 `downloadDir` 对齐内置 provider（系统 Downloads，保存路径默认就有范围）；`0.4.2` 按热门插件共性重写 README（纯文档，代码同 0.4.1）；`0.4.1` 修正 npm 页面上的 README（代码同 0.4.0）；`0.4.0` 合并成单一交付物（一个包装完）；`0.3.0`–`0.3.3` 代码审查与按官方文档核对打包（26 条修复）。
 
 ## 文档
 

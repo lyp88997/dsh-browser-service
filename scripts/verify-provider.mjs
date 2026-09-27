@@ -74,7 +74,7 @@ const BASE = `http://127.0.0.1:${server.address().port}`;
 
 // ── 守护进程 ────────────────────────────────────────────────────────────────
 const root = mkdtempSync(join(tmpdir(), 'browsersvc-verify-provider-'));
-const daemon = spawn(process.execPath, [CLI, 'run', `--root=${root}`, `--port=${PORT}`, '--idle-ms=120000'], {
+const daemon = spawn(process.execPath, [CLI, 'run', `--root=${root}`, `--port=${PORT}`, '--idle-ms=3600000'], {
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let daemonOutput = '';
@@ -420,7 +420,7 @@ try {
   // 用异步 spawn 而不是 spawnSync：阻塞事件循环会让客户端没机会观察到掉线，
   // 那是测试自己造出来的假象（真实场景里 DSH 进程一直在跑事件循环）。
   const restarted = await new Promise((resolve) => {
-    const p = spawn(process.execPath, [CLI, 'restart', `--root=${root}`, `--port=${PORT}`, '--idle-ms=120000'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const p = spawn(process.execPath, [CLI, 'restart', `--root=${root}`, `--port=${PORT}`, '--idle-ms=3600000'], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     p.stdout.on('data', (d) => {
@@ -455,6 +455,169 @@ try {
   });
   check('复活后的会话可以继续导航', revived?.value === '/', reviveError ? `${reviveError.code ?? ''} ${reviveError.message}` : JSON.stringify(revived));
   await provider.close(revive);
+// ── P1：maxTabs 标签页硬上限（真内核，小上限省内存）─────────────────────────
+{
+  console.log('\nP1 标签页上限 maxTabs');
+  const capProvider = createProvider({
+    chromium: (await import('playwright-core')).chromium,
+    config: {
+      providerId: 'cdp-daemon',
+      cdpUrl: `http://127.0.0.1:${PORT}`,
+      connectTimeoutMs: 10_000,
+      actionTimeoutMs: 15_000,
+      navigationTimeoutMs: 15_000,
+      lookupTimeoutMs: 5_000,
+      viewportWidth: 800,
+      viewportHeight: 600,
+      maxTabs: 3,
+      downloadDir: root,
+    },
+  });
+  try {
+    const capSession = await capProvider.open('captabs');
+    await capProvider.openUrl(capSession, { url: `${BASE}/`, newTab: true });
+    await capProvider.openUrl(capSession, { url: `${BASE}/next`, newTab: true });
+    const atCap = await capProvider.listTabs(capSession);
+    check('maxTabs:3 时允许 3 个标签（首开 + 2 次 newTab）', atCap.length === 3, `tabs=${atCap.length}`);
+    let limitError = null;
+    try {
+      await capProvider.openUrl(capSession, { url: `${BASE}/`, newTab: true });
+    } catch (error) {
+      limitError = error;
+    }
+    check('第 4 个标签报 BROWSER_TAB_LIMIT', limitError?.code === 'BROWSER_TAB_LIMIT', String(limitError?.message).slice(0, 200));
+    check('报错文案带上限与现有标签的 URL',
+      /maxTabs=3/.test(String(limitError?.message))
+      && String(limitError?.message).includes(`t2 ${BASE}/`) && String(limitError?.message).includes(`t3 ${BASE}/next`),
+      String(limitError?.message).slice(0, 200));
+    const afterReject = await capProvider.listTabs(capSession);
+    check('拒绝后标签数不变（不留半开的页）', afterReject.length === 3, `tabs=${afterReject.length}`);
+    await capProvider.closeTab(capSession, afterReject[0].id);
+    await capProvider.openUrl(capSession, { url: `${BASE}/next`, newTab: true });
+    check('关掉一个后槽位释放、又能开', (await capProvider.listTabs(capSession)).length === 3);
+    await capProvider.reset(capSession);
+    check('reset_session 收回成 1 个标签', (await capProvider.listTabs(capSession)).length === 1);
+  } catch (error) {
+    check(`maxTabs 段未抛异常：${error?.message}`, false, error?.stack?.split('\n').slice(0, 2).join(' | '));
+  } finally {
+    await capProvider.dispose();
+  }
+}
+
+// ── P1：最后一个会话关闭后主动断开连接 ⇒ 守护进程能按 idleMs 回收 ────────────
+// 守护进程只在「代理端口上没有任何客户端连接」时才可能空闲自杀（src/daemon.mjs:241）。插件过去
+// 一直挂着那条 CDP WebSocket，所以约 600 MB 的常驻浏览器永不回收。这里用第二个短 idle 的守护
+// 进程证明：关掉最后一个会话后它会自行退出，而下一次调用又能自启回来（F25）。
+{
+  console.log('\nP1 无会话时释放连接，守护进程按 idleMs 回收');
+  const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+  const isAlive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const waitGone = async (pid, timeoutMs) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!isAlive(pid)) return true;
+      await sleep(400);
+    }
+    return !isAlive(pid);
+  };
+  const statusOf = (port) => new Promise((resolvePromise) => {
+    const p = spawn(process.execPath, [CLI, 'status', `--port=${port}`], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    p.stdout.on('data', (chunk) => { out += chunk; });
+    p.on('close', () => {
+      try {
+        resolvePromise(JSON.parse(out));
+      } catch {
+        resolvePromise(null);
+      }
+    });
+    p.on('error', () => resolvePromise(null));
+  });
+
+  const idleRoot = mkdtempSync(join(tmpdir(), 'svc-idle-'));
+  const IDLE_PORT = PORT + 1;
+  const IDLE_MS = 15_000;
+  const idleDaemon = spawn(process.execPath, [CLI, 'run', `--root=${idleRoot}`, `--port=${IDLE_PORT}`, `--idle-ms=${IDLE_MS}`], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let idleOut = '';
+  idleDaemon.stdout.on('data', (chunk) => { idleOut += chunk; });
+  idleDaemon.stderr.on('data', (chunk) => { idleOut += chunk; });
+  const waitIdleReady = async (timeoutMs = 30_000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      for (const line of idleOut.split('\n')) {
+        if (!line.trim().startsWith('{')) continue;
+        try {
+          if (JSON.parse(line).ready === true) return;
+        } catch { /* 还没写完一行 */ }
+      }
+      if (idleDaemon.exitCode !== null) throw new Error(`短 idle 守护进程提前退出：\n${idleOut}`);
+      await sleep(120);
+    }
+    throw new Error(`等待短 idle 守护进程就绪超时：\n${idleOut}`);
+  };
+
+  const prevRoot = process.env.DSH_BROWSER_SVC_ROOT;
+  process.env.DSH_BROWSER_SVC_ROOT = idleRoot;
+  let autoStarts = 0;
+  const idleProvider = createProvider({
+    chromium: (await import('playwright-core')).chromium,
+    config: {
+      providerId: 'cdp-daemon',
+      cdpUrl: `http://127.0.0.1:${IDLE_PORT}`,
+      connectTimeoutMs: 5_000,
+      actionTimeoutMs: 15_000,
+      navigationTimeoutMs: 15_000,
+      lookupTimeoutMs: 5_000,
+      viewportWidth: 800,
+      viewportHeight: 600,
+      downloadDir: idleRoot,
+    },
+    autoStart: async () => {
+      autoStarts += 1;
+      const p = spawn(process.execPath, [CLI, 'start', `--root=${idleRoot}`, `--port=${IDLE_PORT}`, `--idle-ms=${IDLE_MS}`], { stdio: 'ignore' });
+      await new Promise((ok) => p.on('close', ok));
+    },
+  });
+  try {
+    await waitIdleReady();
+    const session2 = await idleProvider.open('idle');
+    await idleProvider.openUrl(session2, { url: `${BASE}/` });
+    const during = await statusOf(IDLE_PORT);
+    check('会话活着时守护进程就是被 spawn 的那个（无自启介入）',
+      during?.running === true && during?.pid === idleDaemon.pid && autoStarts === 0,
+      JSON.stringify({ pid: during?.pid, spawned: idleDaemon.pid, autoStarts }));
+    await idleProvider.close(session2);
+    check('最后一个会话关闭后守护进程自行退出（连接确实被释放）', await waitGone(idleDaemon.pid, 30_000), `pid=${idleDaemon.pid}`);
+    check('内核进程随后也被收走', await waitGone(during?.browserPid, 10_000), `browserPid=${during?.browserPid}`);
+    const session3 = await idleProvider.open('idle-again');
+    await idleProvider.openUrl(session3, { url: `${BASE}/next` });
+    const back = await idleProvider.execute(session3, { script: 'document.title' });
+    check('再次调用自动拉起守护进程并可用（自愈）', autoStarts === 1 && back.ok === true && back.value === '第二页', JSON.stringify({ autoStarts, ...back }));
+    await idleProvider.dispose();
+  } catch (error) {
+    check(`释放连接段未抛异常：${error?.message}`, false, error?.stack?.split('\n').slice(0, 2).join(' | '));
+  } finally {
+    if (prevRoot === undefined) delete process.env.DSH_BROWSER_SVC_ROOT;
+    else process.env.DSH_BROWSER_SVC_ROOT = prevRoot;
+    await new Promise((resolvePromise) => {
+      const p = spawn(process.execPath, [CLI, 'stop', `--force`, `--root=${idleRoot}`], { stdio: 'ignore' });
+      p.on('close', resolvePromise);
+      p.on('error', resolvePromise);
+    });
+    if (idleDaemon.exitCode === null) idleDaemon.kill('SIGKILL');
+    rmSync(idleRoot, { recursive: true, force: true });
+  }
+}
+
 } catch (error) {
   check(`未捕获异常：${error?.message}`, false, error?.stack?.split('\n').slice(0, 3).join(' | '));
 } finally {
@@ -598,6 +761,22 @@ try {
   else process.env.DSH_BROWSER_SVC_ROOT = prevRoot;
   rmSync(f25Root, { recursive: true, force: true });
 }
+
+// ── P1：配置默认值（maxTabs / idleMs）────────────────────────────────────────
+{
+  console.log('\nP1 配置默认值');
+  const { Config } = await import('../plugin/lib/index.js');
+  const defaults = Config({});
+  check('maxTabs 默认 5', defaults.maxTabs === 5, String(defaults.maxTabs));
+  check('idleMs 默认 300000（5 分钟）', defaults.idleMs === 300_000, String(defaults.idleMs));
+  const withIdle = defaultAutoStartCommand({ idleMs: 300_000 });
+  check('默认自启命令带上 --idle-ms（idleMs 可配）', / start --idle-ms=300000$/.test(withIdle), String(withIdle));
+  check('idleMs 越界被夹到 1000..24h（不让自启直接失败）',
+    /--idle-ms=1000$/.test(defaultAutoStartCommand({ idleMs: 5 }))
+    && /--idle-ms=86400000$/.test(defaultAutoStartCommand({ idleMs: 10 ** 12 })), '');
+  check('不配 idleMs 时不带该参数（保持向后兼容）', / start$/.test(defaultAutoStartCommand()), String(defaultAutoStartCommand()));
+}
+
 
 console.log(`\n结果：${passed} 通过，${failures.length} 失败${failures.length ? ` →\n  - ${failures.join('\n  - ')}` : ''}`);
 process.exit(failures.length === 0 ? 0 : 1);
