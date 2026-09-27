@@ -1,6 +1,6 @@
 # plugin/ —— dsh-browser-service 的插件侧源码
 
-这里不是独立子包：**v0.4.0 起本仓库只有一个交付物 `dsh-browser-service`**（根 `package.json` 就是它），安装、打包与分发见[根 README](../README.md) §3.3 与 §8。本目录只放插件侧的东西：
+这里不是独立子包：**v0.4.0 起本仓库只有一个交付物 `dsh-browser-service`**（根 `package.json` 就是它），安装、打包与分发见[根 README](../README.md) §3.3 与 §8（npm 短命令：`dsh plugin --profile <name> add dsh-browser-service@latest`）。本目录只放插件侧的东西：
 
 ```
 browser_* 工具（33 个，来自依赖 dsh-builtin-browser 的 tool-browser）

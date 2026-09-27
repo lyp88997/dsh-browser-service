@@ -80,10 +80,13 @@ node bin/browsersvc.mjs start \
 
 ### 3.3 给 DSH 的 `browser_*` 工具用（M2）
 
-**一条命令装完**（`--profile` 换成目标 profile；从 [Releases](https://github.com/lyp88997/dsh-browser-service/releases) 下载或直接用下面的 URL）：
+**一条命令装完**（`--profile` 换成目标 profile；两种等价来源择一）：
 
 ```bash
-dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.4.0/dsh-browser-service-0.4.0.tgz
+# A) npm（2026-09-27 起已发布；@latest 自动跟版本）
+dsh plugin --profile web add dsh-browser-service@latest
+# B) GitHub Release 资产（同一个包；钉版本或离线分发用）
+dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.4.1/dsh-browser-service-0.4.1.tgz
 # 然后重启 DSH；校验（应出现 browserProvider: cdp-daemon 与本包层，且本包三行没有 not found）：
 #   dsh --profile web --dump-config | grep -E 'browserProvider|# == dsh-browser-service|not found'
 ```
@@ -99,7 +102,7 @@ dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/rel
     autoStartCommand: node /home/you/dsh-browser-service/bin/browsersvc.mjs start --port=9333
 ```
 
-- **不能写裸包名 `dsh-browser-cdp`**（v0.4.0 之前子包的名字）：npm 上的 `dsh-browser-cdp` 是别人的同名包（0.17.4）。本包统一叫 `dsh-browser-service`，当前用 tarball / Release 资产 URL 安装（npm 上这个名字还空着，见 §8）。
+- **别用旧名 `dsh-browser-cdp` 当裸包名**（v0.4.0 之前子包的名字）：npm 上的 `dsh-browser-cdp` 是别人的同名包（drscrewdriver，0.17.4），写了就装到别人家。本包 2026-09-27 起已用 `dsh-browser-service` 发布到 npm（当前 0.4.1），所以 `add dsh-browser-service@latest` 成立。
 - 组合自动做四件事：插入接缝 `browser`（选 `cdp-daemon`）、插入 `tool-browser`、插入 `browser-cdp` provider、关掉内置 `browser-electron` 与 `dsh-playwright-browser`（后者自带 10 个与内置**同名**的 `browser_*` 工具，两个 provider 的工具面不能共存）。后两个 id 在本包单独安装的环境里不存在，loader 只打印一条 not found 提示，不影响组合。
 - `browsersvc` 默认空闲 15 分钟自杀（`--idle-ms`，上限 24 小时）；DSH 侧仍在的话，下次调用浏览器会自动把它拉回来（F25）。
 
@@ -130,6 +133,8 @@ node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程
 ```
 
 `verify-bundle.mjs` 在一次性隔离 `DSH_HOME`（`/tmp`）里真实执行官方安装/移除命令：交付物里只有一个包 → `add <tgz>` 追加依赖与层 → `--dump-config` 里本包层挂出 `browser`（`browserProvider: cdp-daemon`）、`tool-browser` 与 `browser-cdp`，且**三行都没有 not found** → 默认自启命令指向装进来的 `bin/browsersvc.mjs` → `./browser` / `./tool-browser` 转出口的导出键与 `dsh-builtin-browser` 源模块**完全一致** → `remove` 同时清掉依赖与层。不碰默认 profile。
+
+npm 短命令（`dsh plugin --profile <n> add dsh-browser-service@latest`）同样在一次性隔离 `DSH_HOME` 里实测通过：pnpm 直连 registry 安装最新版（当时 0.4.0），`dsh.profile.bundles` 追加本包，`--dump-config` 出现 `# == dsh-browser-service` 层与 `browserProvider: cdp-daemon`。
 
 `verify-provider.mjs` 自己起本地站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖 session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back`/`forward`/`reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`、连接被换掉后会话复活（F22）、自启开关复位（F25）、保存路径准入、代理对截断。
 
@@ -210,18 +215,20 @@ closed -> DONE
 
 ## 8. 打包与分发
 
-**一个包、零构建**（纯 ESM），`pnpm pack` 即可分发——这是 DSH 官方文档《打包与安装插件》推荐的 tarball 交付形式：用户拿到 `.tgz` 直接 `dsh plugin add` 安装，**既不用发 npm、也不需要在 profile 里给构建脚本授权**（从 GitHub 装拉的是源码，才需要 `prepare` + `allowBuilds`）。`npm pack` 等价，npm 缓存不可写时加 `npm_config_cache=/tmp/npm-cache`：
+**一个包、零构建**（纯 ESM），三条分发路径都实测过：**npm**（`dsh plugin add dsh-browser-service@latest`）、**GitHub Release 资产**（`dsh plugin add <tgz URL>`）、**本地 tarball**（`dsh plugin add ./dsh-browser-service-<v>.tgz`）。**都不需要**用户给构建脚本授权——只有从 GitHub 装**源码**才要 `prepare` + `allowBuilds`（DSH 官方文档《打包与安装插件》）。打包与发布命令（`npm pack` 等价，npm 缓存不可写时加 `npm_config_cache=/tmp/npm-cache`）：
 
 ```bash
 chmod 755 bin/browsersvc.mjs                          # bin 必须可执行（POSIX 下 npm 全局 shim 是指向它的符号链接）
 chmod -R u+rwX,go+rX .                                # 交付物里的文件权限由本机 umask 决定，打包前统一（F12）
-pnpm pack --pack-destination dist                     # dsh-browser-service-<v>.tgz：唯一交付物
+pnpm pack --pack-destination dist                     # dsh-browser-service-<v>.tgz：唯一交付物（挂 Release 用）
+# 发布到 npm（package.json 不能有 "private": true；token 必须是勾了 Bypass 2FA 的 granular token）：
+npm publish --access public                           # 2026-09-27 首发 0.4.0；同日 0.4.1（修正 npm 页面上的 README 后重发）
 ```
 
-- **单一交付物**：根 `package.json` 里声明 `"dsh": {"bundle": {"patch": "./plugin/cordis.patch.yml"}}`，同一个包同时提供 `bin/browsersvc.mjs`（守护进程 CLI）、`plugin/lib/*`（provider）与 `plugin/shims/*`（接缝/工具面转出口）。安装就是 `dsh plugin --profile <name> add ./dsh-browser-service-<v>.tgz`，或者给 Release 资产 URL。装完这一个包，`--dump-config` 里就出现 `# == dsh-browser-service` 层、`browser`（`browserProvider: cdp-daemon`）、`tool-browser`、`browser-cdp` 四行。
+- **单一交付物**：根 `package.json` 里声明 `"dsh": {"bundle": {"patch": "./plugin/cordis.patch.yml"}}`，同一个包同时提供 `bin/browsersvc.mjs`（守护进程 CLI）、`plugin/lib/*`（provider）与 `plugin/shims/*`（接缝/工具面转出口）。安装就是 `dsh plugin --profile <name> add dsh-browser-service@latest`（或本地 tgz / Release 资产 URL）。装完这一个包，`--dump-config` 里就出现 `# == dsh-browser-service` 层、`browser`（`browserProvider: cdp-daemon`）、`tool-browser`、`browser-cdp` 四行。
 - 依赖：`dsh-builtin-browser`（提供 seam 与 33 个工具，转出后面向 profile 生效）、`playwright-core`（只做 CDP 客户端，**不下载浏览器**）、`@deepseek-ai/schemastery`（配置 schema）。它们由 profile 的 pnpm 解析；接缝包需要的宿主 peer（`@deepseek-ai/cordis` / `dsh-tools` / `dsh-llm` …）由 DSH 在 boot 时建立的 `$DSH_HOME/profiles/node_modules/@deepseek-ai/*`（240 个入口）提供——profile 内任何包向上查找都能命中，所以不需要把它们写进本包依赖。
 - 每个版本在 GitHub Release 挂两份资产：**不带版本号**的 `dsh-browser-service.tgz`（供 `releases/latest/download/dsh-browser-service.tgz` 这类**永不过期**的固定地址引用——插件市场条目就用它）与带版本号的 `dsh-browser-service-<v>.tgz`（文档里建议钉版本用）。
-- `dist/` 已 gitignore。**没有走 npm**：本包历史名字 `dsh-browser-cdp` 已被同名第三方包占用（drscrewdriver 的 `dsh-browser-cdp`，0.17.4）；`dsh-browser-service` 这个名字在 npm 上还空着，要发的话登录后 `pnpm publish` 即可（届时 `dsh plugin add dsh-browser-service` 这种裸包名形式才成立）。
+- `dist/` 已 gitignore。**npm 已发布**：`dsh-browser-service@0.4.0`（首版）与 `@0.4.1`（2026-09-27；`npm view dsh-browser-service` 可见 tarball 与 shasum）。0.4.1 只为修正 **npm 页面上的 README**（0.4.0 的 tarball 里是发布前的文本，写着「没有走 npm」），**代码与 0.4.0 完全相同**。踩坑：发布 token 必须是勾了 **Bypass 2FA** 的 granular token 且权限为 Read and write，否则 `npm publish` 报 403 `Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages`。旧名 `dsh-browser-cdp` 不能用：npm 上已被 drscrewdriver 的同名包占用（0.17.4）。
 - 官方文档提到的 `dsh.engines` / `dsh.compatibility` 元数据本包**没写**：宿主只认 `dsh.bundle`（`@deepseek-ai/dsh-package-manifest` 的 `DshManifest` 里没有这两个字段），它们只被插件市场的发现逻辑读取，宿主既不读也不校验。
 - 验收：`node scripts/verify-bundle.mjs` —— 一次性隔离 `DSH_HOME` 里跑官方 `add` → `--dump-config` → 转出口形状比对 → `remove`，不碰默认 profile。
 
@@ -300,8 +307,9 @@ v0.3.2 上线后，按 DSH 官方《打包与安装插件》（官方仓库 `dee
 | U3 | 默认自启 | `plugin/lib/provider.js` 新增 `defaultAutoStartCommand()`：未配 `autoStartCommand` 时用**本包自带的** `bin/browsersvc.mjs`（`new URL('../../bin/browsersvc.mjs', import.meta.url)`），装完重启 DSH 即用 |
 | U4 | 转出口形状 bug（自查发现） | `dsh-builtin-browser/tool-browser` **没有 default 导出**（只有具名 `name`/`apply`/`inject`），最初写成 `export { default }` 会在组合期报 `does not provide an export named 'default'`；改为 `export *`（`browser` 侧两个都留），并在 `verify-bundle.mjs` 里加「转出口导出键 ≡ 源模块」断言 |
 | U5 | F26：`--internal-port-base` 被静默忽略 | `src/config.mjs` 里该键只读 `config.json`，CLI 传了没用（USAGE 却宣传了它）⇒ 改为 `CLI > config.json > 默认`，并补验收（`internalPort === 19700`） |
+| U6 | 发布到 npm | 2026-09-27 发布 `dsh-browser-service@0.4.0`，同日重发 `@0.4.1`（只为修正 npm 页面上的 README，代码不变）（`npm view dsh-browser-service` 可见 tarball/shasum；发布 token 必须勾 **Bypass 2FA**）。在一次性隔离 `DSH_HOME` 里实测短命令 `dsh plugin --profile np add dsh-browser-service@latest`：bundles 追加本包、`--dump-config` 出 `# == dsh-browser-service` 层与 `browser`（`browserProvider: cdp-daemon`）/`tool-browser`/`browser-cdp` 三行，装进来的 `bin/browsersvc.mjs` 为 755 |
 
-对应验收：`verify-daemon.mjs` 31 → **32**、`verify-provider.mjs` 86 → **88**、`verify-bundle.mjs` 重写为 **23 项**（含单一交付物形状、`add` 后 `--dump-config` 四行齐全且无 not found、默认自启指向包内 bin、转出口形状比对、`remove` 清理）。隔离 web 模板 profile 里跑通了真实的 DSH 内端到端（§5 末尾）。
+对应验收：`verify-daemon.mjs` 31 → **32**、`verify-provider.mjs` 86 → **88**、`verify-bundle.mjs` 重写为 **23 项**（+ npm 短命令安装实测）（含单一交付物形状、`add` 后 `--dump-config` 四行齐全且无 not found、默认自启指向包内 bin、转出口形状比对、`remove` 清理）。隔离 web 模板 profile 里跑通了真实的 DSH 内端到端（§5 末尾）。
 
 ## 14. 许可
 

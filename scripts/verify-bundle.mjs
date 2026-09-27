@@ -2,7 +2,7 @@
 /**
  * 验收「本包作为 DSH 组合包（bundle）能不能一条命令装完即用」。
  *
- *   node scripts/verify-bundle.mjs [--tgz dist/dsh-browser-service-0.4.0.tgz]
+ *   node scripts/verify-bundle.mjs [--tgz dist/dsh-browser-service-<version>.tgz]   # 版本默认读根 package.json
  *
  * 全程在一次性隔离 DSH_HOME（/tmp）里跑，**不碰默认 profile**：
  *   1) 交付物形状：tarball 里只有**一个** package.json，带 shims、patch、bin 与可执行的 browsersvc
@@ -33,7 +33,8 @@ const argOf = (flag, fallback) => {
   if (!hit) return fallback;
   return hit.includes('=') ? hit.slice(hit.indexOf('=') + 1) : argv[argv.indexOf(hit) + 1];
 };
-const TGZ = resolve(argOf('--tgz', resolve(HERE, `../dist/${PKG}-0.4.0.tgz`)));
+const PKG_VERSION = JSON.parse(readFileSync(resolve(HERE, '../package.json'), 'utf8')).version;
+const TGZ = resolve(argOf('--tgz', resolve(HERE, `../dist/${PKG}-${PKG_VERSION}.tgz`)));
 
 let passed = 0;
 const failures = [];
