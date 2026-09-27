@@ -31,6 +31,8 @@ browser_* 工具（内置 tool-browser）
 ```bash
 dsh plugin --profile <name> add dsh-builtin-browser          # 1) 先装 seam 包
 dsh plugin --profile <name> add ./dsh-browser-cdp-0.3.3.tgz  # 2) 再装本包（追加到 dsh.profile.bundles 末尾）
+# 没有本地文件时也可以直接给 Release 资产 URL（实测可用，依赖会记为该 URL）：
+#   dsh plugin --profile <name> add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.3.3/dsh-browser-cdp-0.3.3.tgz
 dsh --profile <name> --dump-config | grep -E 'browserProvider|patched by|not found'
 # 期望：出现 "# == dsh-builtin-browser, patched by dsh-browser-cdp" 与 browserProvider: cdp-daemon，且没有 not found
 ```

@@ -186,12 +186,12 @@ pnpm pack --pack-destination dist                     # dsh-browser-service-<v>.
 ```
 
 - **两个交付物角色不同，别装错**：
-  - `dsh-browser-cdp-<v>.tgz`（7 项 / 约 24 KB）是**组合包**：`package.json` 里声明 `"dsh": {"bundle": {"patch": "./cordis.patch.yml"}}`，用 `dsh plugin --profile <name> add ./dsh-browser-cdp-<v>.tgz` 安装，装完由 DSH 组合自动插入 provider、把 seam 切到 `cdp-daemon`、关掉 `browser-electron`。**前置条件**：`dsh-builtin-browser` 必须先装（`browser`/`browser-electron`/`tool-browser` 三行由它插入，本包按 id 覆盖它们），且 `dsh plugin` 只在 `dsh.profile.bundles` 里**按列表顺序**叠加、后层按行胜出。顺序反了不报错，只打印 `patch: entry "browser" not found` 并静默丢掉覆盖行（等于没生效）——安装/恢复命令、`--dump-config` 校验期望、以及「手写 patch 与 bundle 不要同时用」都写在 `plugin/README.md`。
+  - `dsh-browser-cdp-<v>.tgz`（7 项 / 约 24 KB）是**组合包**：`package.json` 里声明 `"dsh": {"bundle": {"patch": "./cordis.patch.yml"}}`，用 `dsh plugin --profile <name> add ./dsh-browser-cdp-<v>.tgz` 安装（GitHub Release 也挂了同样两个 tarball，可以直接给资产 URL 安装，实测可用），装完由 DSH 组合自动插入 provider、把 seam 切到 `cdp-daemon`、关掉 `browser-electron`。**前置条件**：`dsh-builtin-browser` 必须先装（`browser`/`browser-electron`/`tool-browser` 三行由它插入，本包按 id 覆盖它们），且 `dsh plugin` 只在 `dsh.profile.bundles` 里**按列表顺序**叠加、后层按行胜出。顺序反了不报错，只打印 `patch: entry "browser" not found` 并静默丢掉覆盖行（等于没生效）——安装/恢复命令、`--dump-config` 校验期望、以及「手写 patch 与 bundle 不要同时用」都写在 `plugin/README.md`。
   - `dsh-browser-service-<v>.tgz`（22 项 / 约 69 KB）是**守护进程工具包**，没有 `dsh.bundle`（`private: true`，按官方说明装进 profile 只会当普通依赖、不激活任何层）：解包后直接 `node bin/browsersvc.mjs start`，或 `npm i -g` 取 CLI。
   - `files` 都不含 `node_modules`；插件的运行时依赖（`playwright-core` 只做 CDP 客户端、**不下载浏览器**，以及 `@deepseek-ai/schemastery`）由 profile 的 pnpm 解析——实测两者都解析到 profile 里已有的那一份，不会重复副本。
 - 官方文档提到的 `dsh.engines` / `dsh.compatibility` 元数据本包**没写**：宿主只认 `dsh.bundle`（`@deepseek-ai/dsh-package-manifest` 的 `DshManifest` 里没有这两个字段），它们只被插件市场的发现逻辑读取，宿主既不读也不校验。
 - 验收：`node scripts/verify-bundle.mjs` —— 在一次性隔离 `DSH_HOME` 里真实执行 `add` → `--dump-config` → 顺序反例 → `remove`，断言层已追加、三条 patch 行生效、装反会警告、`remove` 同时清掉依赖与层；不碰默认 profile。
-- `dist/` 已 gitignore；`publishConfig.access=public`，需要时也可 `pnpm publish` 发 npm。
+- `dist/` 已 gitignore；每个版本另在 GitHub Release 挂上这两个 tarball（可从 Release 页直接下载或按 URL 安装）。`publishConfig.access=public`，需要时也可 `pnpm publish` 发 npm。
 
 ## 9. v0.3.0 变更（代码审查 18 条缺陷修复）
 
