@@ -29,15 +29,18 @@ browser_* 工具（内置 tool-browser）
 `dsh plugin --profile <name> <args>` 只是在 profile 目录里转发给 pnpm，所以 `add` 的既可以是包名，也可以是 tarball / Release 资产 URL（官方文档推荐的「免构建授权」交付形式）。**本包必须按 tarball 或 URL 装，不能写裸包名**——npm 上的 `dsh-browser-cdp` 是别人的同名包：
 
 ```bash
-dsh plugin --profile <name> add dsh-builtin-browser   # 1) 先装 seam 包（npm 上有这个包）
-dsh plugin --profile <name> add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.3.3/dsh-browser-cdp-0.3.3.tgz   # 2) 再装本包
-# 有本地文件就用 ./dsh-browser-cdp-<v>.tgz（版本号按 Releases 页最新改）
+# 一条命令装完（起守护进程 + 装 seam 包 + 装本包）；已在跑就跳过 start，可重复执行
+mkdir -p ~/dsh-browser-service && \
+  curl -sL https://github.com/lyp88997/dsh-browser-service/releases/download/v0.3.3/dsh-browser-service-0.3.3.tgz | tar xz -C ~/dsh-browser-service --strip-components=1 && \
+  { node ~/dsh-browser-service/bin/browsersvc.mjs status >/dev/null 2>&1 || node ~/dsh-browser-service/bin/browsersvc.mjs start; } && \
+  dsh plugin --profile <name> add dsh-builtin-browser && \
+  dsh plugin --profile <name> add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.3.3/dsh-browser-cdp-0.3.3.tgz
+# 然后重启 DSH，再校验：
 dsh --profile <name> --dump-config | grep -E 'browserProvider|patched by|not found'
 # 期望：出现 "# == dsh-builtin-browser, patched by dsh-browser-cdp" 与 browserProvider: cdp-daemon，且没有 not found
-# 3) 重启 DSH 才生效（插件在 boot 时 import，热重载不可靠）
 ```
 
-第 1 步会顺带装上 `electron` 包（seam 包的硬依赖），但 pnpm ≥10 默认用 profile 的 `allowBuilds` 拦下它的 postinstall、不下载二进制；本包不走 electron，拦下正好。
+**两条 `add` 必须分开、按顺序**：写成一条 `add dsh-builtin-browser <本包>` 不行——pnpm 会排序依赖键，本包在 `dsh.profile.bundles` 里排到了 seam 包前面，于是两次 `not found`、静默失效。
 
 **顺序是硬要求。** 官方层顺序是 `dsh.profile.bundles` 按列表顺序叠加、后层按行胜出，而本包 patch 的第 2、3 条覆盖的是 `dsh-builtin-browser` 插入的行。本包若排在它前面，loader 只会打印
 
@@ -52,6 +55,8 @@ dsh: [dsh-browser-cdp] patch: entry "browser-electron" not found
 dsh plugin --profile <name> remove dsh-browser-cdp     # 裸名在这里指 profile 的依赖键，不是 npm 包名
 dsh plugin --profile <name> add ./dsh-browser-cdp-<v>.tgz
 ```
+
+第 1 步会顺带装上 `electron` 包（seam 包的硬依赖），但 pnpm ≥10 默认用 profile 的 `allowBuilds` 拦下它的 postinstall、不下载二进制；本包不走 electron，拦下正好。
 
 手工等价做法：在 `$DSH_HOME/profiles/<name>/package.json` 的 `dependencies` 里加本包，由 dsh-config-manager 的 `reconcileBundles` 按依赖顺序补进 `dsh.profile.bundles`（追加在尾部）。
 

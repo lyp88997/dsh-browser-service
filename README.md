@@ -75,23 +75,37 @@ node bin/browsersvc.mjs start \
 
 ### 给 DSH 的 `browser_*` 工具用（M2）
 
-把 M1 的守护进程接进 DSH 的 browser seam：本包只注册 provider，工具面沿用内置 `tool-browser` 的 33 个 `browser_*` 工具。装法是**官方组合包路线**——`dsh plugin --profile <name> <args>` 只是在 profile 目录里转发给 pnpm：
+把 M1 的守护进程接进 DSH 的 browser seam：本包只注册 provider，工具面沿用内置 `tool-browser` 的 33 个 `browser_*` 工具。
+
+**一条命令装完**（下载守护进程工具包 → 起服务 → 装组合包；版本号按 [Releases](https://github.com/lyp88997/dsh-browser-service/releases) 最新的改，`--profile` 换成目标 profile）：
 
 ```bash
-# 1) 先装提供 seam 与工具面的 dsh-builtin-browser（browser / browser-electron / tool-browser 三行由它插入）
-dsh plugin --profile web add dsh-builtin-browser
-# 2) 再装本包（顺序不能反：本包要按 id 覆盖它插入的行）。有本地文件就换成 ./dsh-browser-cdp-<v>.tgz
-dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.3.3/dsh-browser-cdp-0.3.3.tgz
-# 3) 校验：应出现 browserProvider: cdp-daemon 与 "# == dsh-builtin-browser, patched by dsh-browser-cdp"，且没有 not found
-dsh --profile web --dump-config | grep -E 'browserProvider|patched by|not found'
-# 4) 重启 DSH 才生效（插件在 boot 时 import，热重载不可靠）
+mkdir -p ~/dsh-browser-service && \
+  curl -sL https://github.com/lyp88997/dsh-browser-service/releases/download/v0.3.3/dsh-browser-service-0.3.3.tgz | tar xz -C ~/dsh-browser-service --strip-components=1 && \
+  { node ~/dsh-browser-service/bin/browsersvc.mjs status >/dev/null 2>&1 || node ~/dsh-browser-service/bin/browsersvc.mjs start; } && \
+  dsh plugin --profile web add dsh-builtin-browser && \
+  dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.3.3/dsh-browser-cdp-0.3.3.tgz
+# 然后重启 DSH；校验（应出现 browserProvider: cdp-daemon 与 "patched by dsh-browser-cdp"，且没有 not found）：
+#   dsh --profile web --dump-config | grep -E 'browserProvider|patched by|not found'
 ```
 
-第 1 步会顺带装上 `electron` 包（seam 包的硬依赖），但 pnpm ≥10 默认用 profile 的 `allowBuilds` 拦下它的 postinstall、不下载二进制——本包不走 electron，拦下正好（本机 profile 就是这样：有 `electron/` 目录、没有 `electron/dist/electron`）。
+- 这一行**可以重复执行**：`status` 说守护进程已在跑就跳过 `start`；`add` 装过的包 pnpm 会直接跳过（实测连跑两次都 exit 0，`dsh.profile.bundles` 不会出现重复层）。
+- 内核由 `browsersvc start` 自动探测（同 `detect` 的候选顺序）；探测不到就补 `--wrapper=/path/to/wrapper.sh` 或 `--kernel=/path/to/chrome`。
+- **必须是两次 `add` 用 `&&` 串起来**，不能写成一条 `add dsh-builtin-browser <本包>`：pnpm 会排序依赖键，`dsh.profile.bundles` 里本包会排到 seam 前面 ⇒ 只打印两次 `patch: entry "browser"/"browser-electron" not found` 并静默失效。实测：单条 add → `bundles: [base, dsh-browser-cdp, dsh-builtin-browser]` + 两次 not found；`&&` 串联 → `bundles: [base, dsh-builtin-browser, dsh-browser-cdp]` + `patched by dsh-browser-cdp`。
+- **本包不能按裸包名装**：npm 上的 `dsh-browser-cdp` 是别人的同名包（0.17.4），只能用 tarball / Release 资产 URL。第 1 步的 `dsh-builtin-browser` 才是 npm 上我们的真包（它提供 seam 与工具面）。
+- 第 1 步会顺带装上 `electron` 包（seam 包的硬依赖），但 pnpm ≥10 默认用 profile 的 `allowBuilds` 拦下它的 postinstall、不下载二进制——本包不走 electron，拦下正好（本机 profile 就是这样：有 `electron/` 目录、没有 `electron/dist/electron`）。
+- 组合自动做四件事：插入 `browser-cdp`、seam 选 `cdp-daemon`、关掉内置 `browser-electron`、关掉 `dsh-playwright-browser`（它自带 10 个与内置**同名**的 `browser_*` 工具，两个 provider 的工具面不能共存）。
+- `browsersvc` 默认空闲 15 分钟自杀（`--idle-ms`，上限 24 小时）。想让它在死后自动回来，就给 profile patch 里的 insert 行补 `autoStartCommand`（patch 是**整行替换** `config`，所以要重述 `cdpUrl`）：
 
-`--profile <name>` 换成目标 profile（本机是 `web`；不存在时 `add` 会自动创建）。组合自动做四件事：插入 `browser-cdp`（带 `autoStartCommand`，首次用浏览器时自动拉起守护进程）、seam 选 `cdp-daemon`、关掉内置 `browser-electron`、关掉 `dsh-playwright-browser`（它自带 10 个与内置**同名**的 `browser_*` 工具，两个 provider 的工具面不能共存）。
+```yaml
+- id: browser-cdp
+  name: dsh-browser-cdp
+  config:
+    cdpUrl: http://127.0.0.1:9333
+    autoStartCommand: node /home/you/dsh-browser-service/bin/browsersvc.mjs start
+```
 
-> ⚠️ 三个坑：①**顺序反了不报错**——只打印 `patch: entry "browser" not found` 并静默丢掉覆盖行（seam 仍是内置 Electron，等于装上没生效），恢复命令见 `plugin/README.md`；②**不要用裸包名装本包**：npm 上的 `dsh-browser-cdp` 是别人的同名包，必须用 tarball 或 Release 资产 URL；③装完**必须重启 DSH**——运行中的完整 web profile 上 `patchReload: live` 会静默回滚（进程 stdout 归 docker，看不到报错），干净进程里 boot 完全正常。
+> ⚠️ 改完**必须重启 DSH**（插件在 boot 时 import，热重载不可靠）：运行中的完整 web profile 上 `patchReload: live` 会静默回滚（进程 stdout 归 docker，看不到报错），干净进程里 boot 完全正常。
 >
 > 旧的「symlink 进 profile + 手写 `cordis.patch.yml`」只适合改源码时的临时接线（写法见 `docs/provider-m2.md`），**不要与 bundle 路线同时用**（`insert` 行会重复）。
 
