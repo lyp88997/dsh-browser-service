@@ -46,7 +46,8 @@ export const Config = Schema.object({
    */
   cdpToken: Schema.string(),
   /**
-   * 可选：截图/下载落盘的目录边界。不配置 = 只强制绝对路径且不覆盖已有文件（与内置 provider 同语义）。
+   * 可选：截图/下载落盘的目录边界。不配置时取系统 Downloads 目录（`XDG_DOWNLOAD_DIR` → 家目录下
+   * 存在的 `Downloads`/`下载`/`下載` → `~/Downloads`），与内置 provider 同语义。
    */
   downloadDir: Schema.string(),
 });

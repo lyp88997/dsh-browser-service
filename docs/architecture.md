@@ -18,7 +18,7 @@ browser_* 工具（dsh-builtin-browser/tool-browser，经本包 plugin/shims/too
 - `plugin/lib/provider.js`：`createProvider({chromium, BrowserError, config, log, autoStart})`，实现 seam 的 `BrowserProvider` 全部成员（`open`/`execute`/`snapshot`/`screenshot`/…；契约见 `dsh-builtin-browser/lib/browser/types.d.ts`）；`defaultAutoStartCommand()` 指向**本包自带**的 `bin/browsersvc.mjs`。
 - `plugin/lib/dom.js`：注入页面的纯函数（snapshot/a11y/content/scrape/fillForm/challenge 检测）。**注入函数不能引用任何外部作用域**（序列化后不存在）。
 
-配置项（`Config`，全部有默认值）：`providerId='cdp-daemon'`、`cdpUrl='http://127.0.0.1:9333'`、`connectTimeoutMs`、`actionTimeoutMs`、`navigationTimeoutMs`、`lookupTimeoutMs`、`snapshotMaxElements`、`contentMaxChars`、`viewportWidth/Height`、可选 `autoStartCommand`（默认用包内 bin）、`autoStartTimeoutMs`、可选 `cdpToken`（默认自动读 `service.json`）、可选 `downloadDir`。完整表见根 README 的「配置」一节（权威定义是 `plugin/lib/index.js` 的 `Config`）。
+配置项（`Config`，全部有默认值）：`providerId='cdp-daemon'`、`cdpUrl='http://127.0.0.1:9333'`、`connectTimeoutMs`、`actionTimeoutMs`、`navigationTimeoutMs`、`lookupTimeoutMs`、`snapshotMaxElements`、`contentMaxChars`、`viewportWidth/Height`、可选 `autoStartCommand`（默认用包内 bin）、`autoStartTimeoutMs`、可选 `cdpToken`（默认自动读 `service.json`）、可选 `downloadDir`（未配置时由 `defaultDownloadDir()` 取系统 Downloads 目录：`XDG_DOWNLOAD_DIR` → 家目录下存在的 `Downloads`/`下载`/`下載` → `~/Downloads`）。完整表见根 README 的「配置」一节（权威定义是 `plugin/lib/index.js` 的 `Config`）。
 
 ## 2. 部署（一条命令）
 
@@ -32,7 +32,7 @@ dsh --profile <name> --dump-config | grep -E 'patched by|browserProvider|not fou
 
 - **不要再装 `dsh-builtin-browser` 组合包**：本包已经把它作为依赖装进 profile 并自己插接缝行；两者同时激活会出现两条 `tool-browser` 行（工具重名）。
 - 改源码的临时接线（symlink 工作树 + 手写 patch）见 `docs/profile-patch.browser-service.yml`。
-- 本机现状：活 profile（`$DSH_HOME/profiles/web`）在迁移前仍是旧的手写 patch + `node_modules/dsh-browser-cdp` 软链路线。
+- 本机现状：活 profile（`$DSH_HOME/profiles/web`）自 2026-09-27 起已走 bundle 路线（`dsh plugin --profile web add dsh-browser-service@latest`），手写 patch 块与 `node_modules/dsh-browser-cdp` 软链都已删除，备份留在 profile 目录的 `*.bak-pre-bundle`。
 
 patch 做四件事：insert 接缝 `browser`（选 `cdp-daemon`）、insert `tool-browser`、insert 本 provider、关掉内置 `browser-electron`。
 
@@ -40,13 +40,13 @@ patch 做四件事：insert 接缝 `browser`（选 `cdp-daemon`）、insert `too
 
 ## 3. 验收
 
-### 3.1 provider 层（88 项，零依赖、不碰外网）
+### 3.1 provider 层（95 项，零依赖、不碰外网）
 
 ```bash
-node scripts/verify-provider.mjs      # 结果：88 通过，0 失败
+node scripts/verify-provider.mjs      # 结果：95 通过，0 失败
 ```
 
-自己起本地 http 站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖：`available`、session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back/forward/reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`、保存路径准入（F1）、掉线后会话复活（F22）、默认自启命令。
+自己起本地 http 站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖：`available`、session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back/forward/reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`、保存路径准入（F1）与默认保存目录（D1）、掉线后会话复活（F22）、默认自启命令。
 
 守护进程/CLI 层：`node scripts/verify-daemon.mjs`（32 项）；组合包安装路径：`node scripts/verify-bundle.mjs`（23 项）。
 

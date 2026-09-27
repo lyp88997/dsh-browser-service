@@ -25,6 +25,25 @@ export function defaultAutoStartCommand() {
   return existsSync(bin) ? `node ${JSON.stringify(bin)} start` : undefined;
 }
 
+const DOWNLOAD_DIR_NAMES = ['Downloads', '下载', '下載'];
+
+/**
+ * 未配置 downloadDir 时的默认保存目录（D1）：与内置 browser provider 完全同语义 ——
+ * 存在的 `XDG_DOWNLOAD_DIR` 优先（freedesktop 标准），其次是家目录下第一个存在的
+ * `Downloads`（含 zh-CN 的 `下载` / zh-TW 的 `下載`），都没有时回落英文名，目录在
+ * 第一次写入时由 `mkdir(…, {recursive:true})` 建出来。
+ * 默认就有范围，内置工具 schema 里那句「默认写进系统 Downloads 目录」才成立。
+ */
+export function defaultDownloadDir() {
+  const xdg = process.env.XDG_DOWNLOAD_DIR;
+  if (typeof xdg === 'string' && xdg !== '' && existsSync(xdg)) return xdg;
+  for (const name of DOWNLOAD_DIR_NAMES) {
+    const candidate = join(homedir(), name);
+    if (existsSync(candidate)) return candidate;
+  }
+  return join(homedir(), DOWNLOAD_DIR_NAMES[0] ?? 'Downloads');
+}
+
 const SESSION_UNKNOWN = 'BROWSER_SESSION_UNKNOWN';
 const TAB_UNKNOWN = 'BROWSER_TAB_UNKNOWN';
 const TARGET_INVALID = 'BROWSER_TARGET_INVALID';
@@ -57,9 +76,12 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
   };
 
-  // 保存路径准入的范围限制（F1）：与内置 browser provider 同语义 —— downloadDir 未配置时
-  // 只强制「绝对路径 + 不覆盖已有文件」，配置了才额外要求落在该目录内。
-  const downloadDir = typeof config.downloadDir === 'string' && config.downloadDir ? resolve(config.downloadDir) : undefined;
+  // 保存路径准入的范围（F1 + D1）：与内置 browser provider 完全同语义 —— 显式配置的
+  // downloadDir 优先，未配置时取系统 Downloads 目录（defaultDownloadDir）。所以截图与
+  // 下载默认就只能写进那一个目录，而不是任意绝对路径。
+  const downloadDir = resolve(
+    typeof config.downloadDir === 'string' && config.downloadDir ? config.downloadDir : defaultDownloadDir(),
+  );
 
   class CdpProvider {
     id = config.providerId;
@@ -98,20 +120,18 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     /**
-     * 保存路径准入：必须绝对路径；配了 downloadDir 必须落在其内；拒绝覆盖已有文件。
-     * 返回解析后的绝对路径。语义与内置 provider 的 admitSavePath 一致。
+     * 保存路径准入：必须绝对路径、必须落在 downloadDir 内（显式配置或默认系统 Downloads
+     * 目录）、拒绝覆盖已有文件。返回解析后的绝对路径，语义与内置 provider 的 admitSavePath 一致。
      */
     #admitSavePath(savePath, kind) {
       const code = kind === 'download' ? 'BROWSER_DOWNLOAD_BLOCKED' : 'BROWSER_SCREENSHOT_BLOCKED';
       const raw = typeof savePath === 'string' ? savePath : '';
       if (!isAbsolute(raw)) throw fail(`browser: ${kind} savePath must be an absolute path（收到 "${raw}"）`, code);
       const file = resolve(raw);
-      if (downloadDir !== undefined) {
-        const fileLower = file.toLowerCase();
-        const dirLower = downloadDir.toLowerCase();
-        if (fileLower !== dirLower && !fileLower.startsWith(dirLower + sep.toLowerCase())) {
-          throw fail(`browser: ${kind} savePath must be inside downloadDir "${downloadDir}"`, code);
-        }
+      const fileLower = file.toLowerCase();
+      const dirLower = downloadDir.toLowerCase();
+      if (fileLower !== dirLower && !fileLower.startsWith(dirLower + sep.toLowerCase())) {
+        throw fail(`browser: ${kind} savePath must be inside downloadDir "${downloadDir}"`, code);
       }
       if (existsSync(file)) throw fail(`browser: refusing to overwrite existing file "${file}" — use another name`, code);
       return file;

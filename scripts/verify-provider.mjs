@@ -13,11 +13,11 @@
  */
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createProvider, defaultAutoStartCommand } from '../plugin/lib/provider.js';
+import { createProvider, defaultAutoStartCommand, defaultDownloadDir } from '../plugin/lib/provider.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const CLI = process.env.DSH_BROWSER_SVC_CLI ?? resolve(HERE, '../bin/browsersvc.mjs');
@@ -286,6 +286,56 @@ try {
   await expectCode('下载越出 downloadDir 被拒', 'BROWSER_DOWNLOAD_BLOCKED', () => provider.download(session, { url: `${BASE}/next`, savePath: '/tmp/outside-dsh.html' }));
   await provider.screenshot(session, { savePath: join(root, 'shot2.png') });
   check('downloadDir 内的新路径可写入', existsSync(join(root, 'shot2.png')) && statSync(join(root, 'shot2.png')).size > 1000, 'shot2.png');
+
+  // D1：未配置 downloadDir 时的默认保存目录＝系统 Downloads（与内置 browser provider 同语义），
+  // 所以「任意绝对路径」不再是允许的：默认也只能写进那一个目录，目录本身首次写入时建出来。
+  console.log('\n保存路径默认范围（D1）');
+  const d1Home = mkdtempSync(join(tmpdir(), 'svc-d1-home-'));
+  const prevHome = process.env.HOME;
+  const prevXdg = process.env.XDG_DOWNLOAD_DIR;
+  let d1Provider;
+  try {
+    delete process.env.XDG_DOWNLOAD_DIR;
+    process.env.HOME = d1Home;
+    check('都不存在时默认 ~/Downloads', defaultDownloadDir() === join(d1Home, 'Downloads'), defaultDownloadDir());
+    mkdirSync(join(d1Home, '下载'), { recursive: true });
+    check('存在本地化目录时优先用它', defaultDownloadDir() === join(d1Home, '下载'), defaultDownloadDir());
+    const xdgDir = join(d1Home, 'xdg');
+    mkdirSync(xdgDir, { recursive: true });
+    process.env.XDG_DOWNLOAD_DIR = xdgDir;
+    check('存在的 XDG_DOWNLOAD_DIR 最优先', defaultDownloadDir() === xdgDir, defaultDownloadDir());
+    process.env.XDG_DOWNLOAD_DIR = join(d1Home, 'missing');
+    check('不存在的 XDG_DOWNLOAD_DIR 被忽略', defaultDownloadDir() === join(d1Home, '下载'), defaultDownloadDir());
+    delete process.env.XDG_DOWNLOAD_DIR;
+    // 回到「什么都不存在」的状态：下面这个 provider 的默认目录＝还不存在的 ~/Downloads
+    rmSync(join(d1Home, '下载'), { recursive: true, force: true });
+    d1Provider = createProvider({
+      chromium,
+      config: {
+        providerId: 'cdp-daemon',
+        cdpUrl: `http://127.0.0.1:${PORT}`,
+        connectTimeoutMs: 10_000,
+        actionTimeoutMs: 15_000,
+        navigationTimeoutMs: 15_000,
+        lookupTimeoutMs: 5_000,
+        snapshotMaxElements: 50,
+        contentMaxChars: 10_000,
+        viewportWidth: 800,
+        viewportHeight: 600,
+      },
+    });
+    const d1Session = await d1Provider.open('d1');
+    await expectCode('未配置 downloadDir 时默认目录之外被拒', 'BROWSER_SCREENSHOT_BLOCKED', () => d1Provider.screenshot(d1Session, { savePath: join(tmpdir(), 'd1-outside.png') }));
+    await expectCode('未配置 downloadDir 时 /tmp 下载也被拒', 'BROWSER_DOWNLOAD_BLOCKED', () => d1Provider.download(d1Session, { url: `${BASE}/next`, savePath: join(tmpdir(), 'd1-outside.html') }));
+    const d1Target = join(d1Home, 'Downloads', 'd1-ok.png');
+    await d1Provider.screenshot(d1Session, { savePath: d1Target });
+    check('默认目录内的路径可写入且目录被建出来', existsSync(d1Target) && statSync(d1Target).size > 1000, d1Target);
+  } finally {
+    await d1Provider?.dispose();
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevXdg === undefined) delete process.env.XDG_DOWNLOAD_DIR; else process.env.XDG_DOWNLOAD_DIR = prevXdg;
+    rmSync(d1Home, { recursive: true, force: true });
+  }
 
   console.log('\n标签页 / 历史');
   await provider.openUrl(session, { url: `${BASE}/next`, newTab: true });

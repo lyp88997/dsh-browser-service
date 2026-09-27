@@ -3,7 +3,18 @@
 本文件记录每个版本的变更与**真实缺陷编号**（F = 代码审查/上线验证发现的缺陷，B = 按官方打包文档核对发现的问题，U = v0.4.0 合并交付物的改动，F26 见 v0.4.0）。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-验收计数随版本推进：`verify-daemon` 13 → 26 → 31 → **32**，`verify-provider` 67 → 77 → 83 → 86 → **88**，`verify-bundle` 16 → **23**。
+验收计数随版本推进：`verify-daemon` 13 → 26 → 31 → **32**，`verify-provider` 67 → 77 → 83 → 86 → 88 → **95**，`verify-bundle` 16 → **23**。
+
+## [0.4.3] — 2026-09-27
+
+起因：接缝工具 schema（来自依赖 `dsh-builtin-browser`，作用在**所有** provider 上）对 `browser_screenshot` / `browser_download` 的 `savePath` 写的是「必须落在 configured `downloadDir` 内（默认＝系统 Downloads 目录）」，而本 provider 在 `downloadDir` 未配置时**不做任何目录限制**——描述与行为不一致，且提示注入能诱导浏览器工具写任意绝对路径。
+
+| # | 项 | 影响 | 处理 |
+| --- | --- | --- | --- |
+| D1 | `downloadDir` 未配置＝目录不设限（描述与行为不一致、且可被提示注入利用） | `#admitSavePath` 只拦「相对路径 + 覆盖已有文件」；模型按 schema 的说明以为写进了 Downloads，实际写到了任意位置 | 新增 `defaultDownloadDir()`（与内置 `ElectronBrowserProvider` 完全同语义：存在的 `XDG_DOWNLOAD_DIR` 优先 → 家目录下存在的 `Downloads`/`下载`/`下載` → 回落 `~/Downloads`，目录在首次写入时由 `mkdir(recursive)` 建出来）；`downloadDir` 现在恒有值，准入从「配了才限范围」变成「始终限范围」，去掉 `#admitSavePath` 里 `undefined` 的分支 |
+
+- 验收：`verify-provider.mjs` 88 → **95**。新增 7 项：默认目录的四条解析规则（都不存在 → `~/Downloads`／本地化目录优先／存在的 `XDG_DOWNLOAD_DIR` 最优先／不存在的 `XDG_DOWNLOAD_DIR` 被忽略）、未配置 `downloadDir` 时默认目录之外被拒（截图与下载两条）、默认目录内可写入且目录被建出来。
+- **升级必读（行为变化）**：`savePath` 默认只能写进系统 Downloads 目录，`savePath: /tmp/x.png` 这类写法现在会被拒（`BROWSER_SCREENSHOT_BLOCKED` / `BROWSER_DOWNLOAD_BLOCKED`）。要写进工作区或别处，就在 profile patch 的 `browser-cdp` 行 `config` 里显式配 `downloadDir`（patch **整行替换** `config`，覆盖时该行其它键要重述）。
 
 ## [0.4.2] — 2026-09-27
 

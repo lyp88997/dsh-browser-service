@@ -27,8 +27,8 @@
 ```bash
 dsh plugin --profile web add dsh-browser-service@latest
 # 也可以钉版本 / 离线分发（同一个包）：
-#   dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.4.2/dsh-browser-service-0.4.2.tgz
-#   dsh plugin --profile web add ./dsh-browser-service-0.4.2.tgz
+#   dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.4.3/dsh-browser-service-0.4.3.tgz
+#   dsh plugin --profile web add ./dsh-browser-service-0.4.3.tgz
 
 # 然后重启 DSH，再校验（应出现 browserProvider: cdp-daemon 与本包层，且本包三行没有 not found）：
 dsh --profile web --dump-config | grep -E 'browserProvider|# == dsh-browser-service|not found'
@@ -200,7 +200,7 @@ node bin/browsersvc.mjs start \
 | `autoStartCommand` | 空 = 用**本包自带**的 `bin/browsersvc.mjs start` | 可选：首次用浏览器时执行的命令；换端口/内核才需要填 |
 | `autoStartTimeoutMs` | `60000` | `autoStartCommand` 的执行超时 |
 | `cdpToken` | 空 | 一般不用填：留空时自动读 `<DSH_BROWSER_SVC_ROOT 或 $DSH_HOME/browser-service>/service.json` 里的 `token`（每次 attach 重读，守护进程重启换 token 也能跟上）。只有指向自建/非 browsersvc 的 CDP 端点时才需要显式给 |
-| `downloadDir` | 空 | 填了就要求 `browser_screenshot` / `browser_download` 的 `savePath` 落在该目录内（未填则只强制「绝对路径 + 不覆盖已有文件」） |
+| `downloadDir` | 系统 Downloads 目录 | 截图/下载的 `savePath` 必须落在该目录内。不配置时与内置 provider 同语义：`XDG_DOWNLOAD_DIR`（存在才用）→ 家目录下存在的 `Downloads`/`下载`/`下載` → `~/Downloads`（首次写入时建出来）。要存进工作区/别处就显式填一个目录 |
 
 这些键的权威定义在 `plugin/lib/index.js` 的 `Config`（schemastery schema）——**改默认值必须同时改这里和本表**。
 
@@ -242,6 +242,7 @@ node bin/browsersvc.mjs start \
 8. **`browser_execute` 传的是表达式语境**：传函数体会被当表达式求值并报 `page.evaluate: SyntaxError: Illegal return statement`，请传 `(...) => {...}` 或纯表达式。
 9. **`browser_fill` 的 `fields[].selector` 是作用域不是定位器**：定位某个控件请用 `browser_click` / `browser_set_value` / `browser_check` 的 `target`。
 10. **macOS / Windows 未测试**；仅 Linux（Debian 12 容器）实测。
+11. **截图/下载默认只能写进系统 Downloads 目录**（`XDG_DOWNLOAD_DIR` → 家目录下存在的 `Downloads`/`下载`/`下載` → `~/Downloads`，对齐内置 provider）。要写进工作区或别处，就在 profile patch 的 `browser-cdp` 行 `config` 里显式配 `downloadDir`（patch **整行替换** `config`，覆盖时该行其它键要重述）。
 
 ## 安全模型
 
@@ -250,7 +251,7 @@ node bin/browsersvc.mjs start \
 3. **`--disable-dev-shm-usage` 必需**（`/dev/shm` 只有 64M）。
 4. 会话隔离必须用 incognito `BrowserContext`，不要复用默认上下文。
 5. **公开端口要求凭据**：`Authorization: Bearer <token>`（每次守护进程启动随机生成，落在 0600 的 `service.json`）。代理只放行读元数据（`GET /json/version|/json/list|/json/protocol`）与 `/devtools/*`，挡掉 `/json/new|close|activate` 这类控制接口；`/json/version` 里的 `webSocketDebuggerUrl` 会被改写成代理自己的地址并附上 token，所以调用方（provider）不需要额外配置，也绕不开代理。内部内核端口仍只绑回环。
-6. **保存路径准入**：`browser_screenshot` / `browser_download` 的 `savePath` 必须是绝对路径、不得覆盖已有文件；配了 `downloadDir` 时还必须落在该目录内（与内置 browser provider 同语义，违规报 `BROWSER_SCREENSHOT_BLOCKED` / `BROWSER_DOWNLOAD_BLOCKED`）。
+6. **保存路径准入**：`browser_screenshot` / `browser_download` 的 `savePath` 必须是绝对路径、不得覆盖已有文件，并且必须落在 `downloadDir` 内（不配置时＝系统 Downloads 目录，见配置表；违规报 `BROWSER_SCREENSHOT_BLOCKED` / `BROWSER_DOWNLOAD_BLOCKED`）。这样接缝工具 schema 里那句「默认写进系统 Downloads 目录」才是真的，提示注入也没法让浏览器工具写任意路径。
 7. 状态文件 0600、日志 0600，日志不记录页面内容。
 
 维护约定（改动这些是安全回归）：上面的 1–4 与 6 请不要为了「能跑通」而放宽；验收脚本里对应断言就是为了拦住这种改动。
@@ -261,14 +262,14 @@ node bin/browsersvc.mjs start \
 
 ```bash
 node scripts/verify-daemon.mjs      # M1 守护进程 + CLI 防御：32/32
-node scripts/verify-provider.mjs    # M2 provider：88 通过，0 失败
+node scripts/verify-provider.mjs    # M2 provider：95 通过，0 失败
 node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）：23/23
 ```
 
 | 套件 | 项数 | 覆盖 |
 |---|---|---|
 | `verify-daemon.mjs` | **32/32** | 守护进程启停/重启、token 与 401/403 凭据门、只绑回环、上下文隔离、崩溃重启、空闲退出、配置校验、启动失败不留孤儿、`stop` 身份校验 |
-| `verify-provider.mjs` | **88 通过 / 0 失败** | 33 个工具的行为与边界（含 `execute`/`a11y`/`scrape`/`form`/`screenshot`/`download`/`auth`）、会话隔离与复活、保存路径准入、代理对截断 |
+| `verify-provider.mjs` | **95 通过 / 0 失败** | 33 个工具的行为与边界（含 `execute`/`a11y`/`scrape`/`form`/`screenshot`/`download`/`auth`）、会话隔离与复活、保存路径准入与默认保存目录（D1）、代理对截断 |
 | `verify-bundle.mjs` | **23/23** | 在一次性隔离 `DSH_HOME` 里跑官方 `add` → `--dump-config` → 转出口形状比对 → `remove`，不碰默认 profile |
 
 完整输出（32 条 PASS 原文、DSH 内端到端日志、npm 短命令实测、未自动化覆盖的部分）见 [`docs/verification.md`](https://github.com/lyp88997/dsh-browser-service/blob/main/docs/verification.md)。
@@ -300,7 +301,7 @@ node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程
 `data:` / `file:` / `about:` 会被拒绝。本地页面起个 HTTP 服务再用 `http://127.0.0.1:<port>/` 打开。
 
 **截图/下载报 `BROWSER_SCREENSHOT_BLOCKED` / `BROWSER_DOWNLOAD_BLOCKED`？**
-`savePath` 必须是绝对路径、不能是已有文件；配了 `downloadDir` 就必须在该目录内。
+`savePath` 必须是绝对路径、不能是已有文件，而且必须落在 `downloadDir` 内。**默认目录＝系统 Downloads**（`XDG_DOWNLOAD_DIR` → 家目录下存在的 `Downloads`/`下载`/`下載` → `~/Downloads`），所以 `savePath: /tmp/x.png` 这类写法默认会被拒——必须显式配 `downloadDir`（见「配置」与「已知限制」11）。
 
 **改了 patch 没生效？**
 重启 DSH。另外手写 patch 与 bundle 路线不要同时用（`insert` 行会重复）。
@@ -343,7 +344,7 @@ npm publish --access public
 - **单一交付物**：根 `package.json` 里声明 `"dsh": {"bundle": {"patch": "./plugin/cordis.patch.yml"}}`，同一个包同时提供 `bin/browsersvc.mjs`（守护进程 CLI）、`plugin/lib/*`（provider）与 `plugin/shims/*`（接缝/工具面转出口）。装完这一个包，`--dump-config` 里就出现 `# == dsh-browser-service` 层、`browser`（`browserProvider: cdp-daemon`）、`tool-browser`、`browser-cdp` 四行。
 - 依赖：`dsh-builtin-browser`（提供 seam 与 33 个工具，转出后面向 profile 生效）、`playwright-core`（只做 CDP 客户端，**不下载浏览器**）、`@deepseek-ai/schemastery`（配置 schema）。它们由 profile 的 pnpm 解析；接缝包需要的宿主 peer（`@deepseek-ai/cordis` / `dsh-tools` / `dsh-llm` …）由 DSH 在 boot 时建立的 `$DSH_HOME/profiles/node_modules/@deepseek-ai/*`（240 个入口）提供——profile 内任何包向上查找都能命中，所以不需要把它们写进本包依赖。
 - 每个版本在 GitHub Release 挂两份资产：**不带版本号**的 `dsh-browser-service.tgz`（供 `releases/latest/download/dsh-browser-service.tgz` 这类**永不过期**的固定地址引用——插件市场条目就用它）与带版本号的 `dsh-browser-service-<v>.tgz`（文档里建议钉版本用）。
-- `dist/` 已 gitignore。**npm 已发布**：`dsh-browser-service@0.4.0`（首版）、`@0.4.1`、`@0.4.2`（均 2026-09-27；`npm view dsh-browser-service` 可见 tarball 与 shasum）。0.4.1 与 0.4.2 都是**只为刷新 npm 页面上的 README**（前者修 0.4.0 tarball 里的发布前文本，后者带上对齐生态后的 README），两版**代码分别与 0.4.0 / 0.4.1 完全相同**。
+- `dist/` 已 gitignore。**npm 已发布**：`dsh-browser-service@0.4.0`（首版）、`@0.4.1`、`@0.4.2`、`@0.4.3`（均 2026-09-27；`npm view dsh-browser-service` 可见 tarball 与 shasum）。0.4.1 与 0.4.2 是**只为刷新 npm 页面上的 README**（前者修 0.4.0 tarball 里的发布前文本，后者带上对齐生态后的 README），这两版**代码分别与 0.4.0 / 0.4.1 完全相同**；0.4.3 起有真实代码变更（默认 `downloadDir` 对齐内置 provider，见 CHANGELOG 的 D1）。
 - 踩坑：发布 token 必须是勾了 **Bypass 2FA** 的 granular token 且权限为 Read and write，否则 `npm publish` 报 `403 Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages`。旧名 `dsh-browser-cdp` 不能用：npm 上已被 drscrewdriver 的同名包占用（0.17.4）。
 - 官方文档提到的 `dsh.engines` / `dsh.compatibility` 元数据本包**没写**：宿主只认 `dsh.bundle`（`@deepseek-ai/dsh-package-manifest` 的 `DshManifest` 里没有这两个字段），它们只被插件市场的发现逻辑读取，宿主既不读也不校验。
 
@@ -352,7 +353,7 @@ npm publish --access public
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | **M1** | 守护进程 + 回环代理 + 空闲回收 + 崩溃重启 + 32 项验收 | ✅ 完成 |
-| **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerBrowserProvider`），复用接缝包的 33 个 `browser_*` 工具 | ✅ 完成（88 项 + DSH 内端到端） |
+| **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerBrowserProvider`），复用接缝包的 33 个 `browser_*` 工具 | ✅ 完成（95 项 + DSH 内端到端） |
 | **M6** | 代码审查 18 条缺陷修复（F1–F18） | ✅ 完成（v0.3.0 → v0.3.3） |
 | **M7** | 「一个包装完」：单一交付物，接缝与工具面由依赖 `dsh-builtin-browser` 转出 | ✅ 完成（v0.4.0） |
 
@@ -360,8 +361,8 @@ npm publish --access public
 
 ## 更新记录
 
-- **[CHANGELOG.md](https://github.com/lyp88997/dsh-browser-service/blob/main/CHANGELOG.md)** —— v0.4.2 / 0.4.1 / 0.4.0 / 0.3.3 / 0.3.2 / 0.3.1 / 0.3.0，含每条真实缺陷（F1–F26、B1–B4、U1–U6）的复现与修复。
-- 摘要：`0.4.2` 按热门插件共性重写 README（纯文档，代码同 0.4.1）；`0.4.1` 修正 npm 页面上的 README（代码同 0.4.0）；`0.4.0` 合并成单一交付物（一个包装完）；`0.3.0`–`0.3.3` 代码审查与按官方文档核对打包（26 条修复）。
+- **[CHANGELOG.md](https://github.com/lyp88997/dsh-browser-service/blob/main/CHANGELOG.md)** —— v0.4.3 / 0.4.2 / 0.4.1 / 0.4.0 / 0.3.3 / 0.3.2 / 0.3.1 / 0.3.0，含每条真实缺陷（F1–F26、B1–B4、U1–U6、D1）的复现与修复。
+- 摘要：`0.4.3` 默认 `downloadDir` 对齐内置 provider（系统 Downloads，保存路径默认就有范围）；`0.4.2` 按热门插件共性重写 README（纯文档，代码同 0.4.1）；`0.4.1` 修正 npm 页面上的 README（代码同 0.4.0）；`0.4.0` 合并成单一交付物（一个包装完）；`0.3.0`–`0.3.3` 代码审查与按官方文档核对打包（26 条修复）。
 
 ## 文档
 
