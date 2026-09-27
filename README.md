@@ -27,8 +27,8 @@
 ```bash
 dsh plugin --profile web add dsh-browser-service@latest
 # 也可以钉版本 / 离线分发（同一个包）：
-#   dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.4.1/dsh-browser-service-0.4.1.tgz
-#   dsh plugin --profile web add ./dsh-browser-service-0.4.1.tgz
+#   dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.4.2/dsh-browser-service-0.4.2.tgz
+#   dsh plugin --profile web add ./dsh-browser-service-0.4.2.tgz
 
 # 然后重启 DSH，再校验（应出现 browserProvider: cdp-daemon 与本包层，且本包三行没有 not found）：
 dsh --profile web --dump-config | grep -E 'browserProvider|# == dsh-browser-service|not found'
@@ -343,7 +343,7 @@ npm publish --access public
 - **单一交付物**：根 `package.json` 里声明 `"dsh": {"bundle": {"patch": "./plugin/cordis.patch.yml"}}`，同一个包同时提供 `bin/browsersvc.mjs`（守护进程 CLI）、`plugin/lib/*`（provider）与 `plugin/shims/*`（接缝/工具面转出口）。装完这一个包，`--dump-config` 里就出现 `# == dsh-browser-service` 层、`browser`（`browserProvider: cdp-daemon`）、`tool-browser`、`browser-cdp` 四行。
 - 依赖：`dsh-builtin-browser`（提供 seam 与 33 个工具，转出后面向 profile 生效）、`playwright-core`（只做 CDP 客户端，**不下载浏览器**）、`@deepseek-ai/schemastery`（配置 schema）。它们由 profile 的 pnpm 解析；接缝包需要的宿主 peer（`@deepseek-ai/cordis` / `dsh-tools` / `dsh-llm` …）由 DSH 在 boot 时建立的 `$DSH_HOME/profiles/node_modules/@deepseek-ai/*`（240 个入口）提供——profile 内任何包向上查找都能命中，所以不需要把它们写进本包依赖。
 - 每个版本在 GitHub Release 挂两份资产：**不带版本号**的 `dsh-browser-service.tgz`（供 `releases/latest/download/dsh-browser-service.tgz` 这类**永不过期**的固定地址引用——插件市场条目就用它）与带版本号的 `dsh-browser-service-<v>.tgz`（文档里建议钉版本用）。
-- `dist/` 已 gitignore。**npm 已发布**：`dsh-browser-service@0.4.0`（首版）与 `@0.4.1`（2026-09-27；`npm view dsh-browser-service` 可见 tarball 与 shasum）。0.4.1 只为修正 **npm 页面上的 README**（0.4.0 的 tarball 里是发布前的文本），**代码与 0.4.0 完全相同**。
+- `dist/` 已 gitignore。**npm 已发布**：`dsh-browser-service@0.4.0`（首版）、`@0.4.1`、`@0.4.2`（均 2026-09-27；`npm view dsh-browser-service` 可见 tarball 与 shasum）。0.4.1 与 0.4.2 都是**只为刷新 npm 页面上的 README**（前者修 0.4.0 tarball 里的发布前文本，后者带上对齐生态后的 README），两版**代码分别与 0.4.0 / 0.4.1 完全相同**。
 - 踩坑：发布 token 必须是勾了 **Bypass 2FA** 的 granular token 且权限为 Read and write，否则 `npm publish` 报 `403 Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages`。旧名 `dsh-browser-cdp` 不能用：npm 上已被 drscrewdriver 的同名包占用（0.17.4）。
 - 官方文档提到的 `dsh.engines` / `dsh.compatibility` 元数据本包**没写**：宿主只认 `dsh.bundle`（`@deepseek-ai/dsh-package-manifest` 的 `DshManifest` 里没有这两个字段），它们只被插件市场的发现逻辑读取，宿主既不读也不校验。
 
@@ -360,8 +360,8 @@ npm publish --access public
 
 ## 更新记录
 
-- **[CHANGELOG.md](https://github.com/lyp88997/dsh-browser-service/blob/main/CHANGELOG.md)** —— v0.4.1 / 0.4.0 / 0.3.3 / 0.3.2 / 0.3.1 / 0.3.0，含每条真实缺陷（F1–F26、B1–B4、U1–U6）的复现与修复。
-- 摘要：`0.4.1` 修正 npm 页面上的 README（代码同 0.4.0）；`0.4.0` 合并成单一交付物（一个包装完）；`0.3.0`–`0.3.3` 代码审查与按官方文档核对打包（26 条修复）。
+- **[CHANGELOG.md](https://github.com/lyp88997/dsh-browser-service/blob/main/CHANGELOG.md)** —— v0.4.2 / 0.4.1 / 0.4.0 / 0.3.3 / 0.3.2 / 0.3.1 / 0.3.0，含每条真实缺陷（F1–F26、B1–B4、U1–U6）的复现与修复。
+- 摘要：`0.4.2` 按热门插件共性重写 README（纯文档，代码同 0.4.1）；`0.4.1` 修正 npm 页面上的 README（代码同 0.4.0）；`0.4.0` 合并成单一交付物（一个包装完）；`0.3.0`–`0.3.3` 代码审查与按官方文档核对打包（26 条修复）。
 
 ## 文档
 

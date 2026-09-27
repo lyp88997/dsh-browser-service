@@ -5,6 +5,16 @@
 
 验收计数随版本推进：`verify-daemon` 13 → 26 → 31 → **32**，`verify-provider` 67 → 77 → 83 → 86 → **88**，`verify-bundle` 16 → **23**。
 
+## [0.4.2] — 2026-09-27
+
+**纯文档版：代码与 0.4.1 完全相同**，只为让 npm 页面与仓库首页用上对齐生态后的 README（npm 只渲染已发布 tarball 里的 README）。
+
+- README 按同类热门插件（Tencent/BrowserSkill、dsh-web、dsh-browser 等 15 个抽样）的共性重写：徽章 + 英文 TL;DR + 语义化章节（这是什么 / 快速开始 / 环境要求与兼容性 / 工具参考 / 配置 / 架构 / 已知限制 / FAQ / 升级与卸载 / 进度 / 更新记录 / 文档 / 贡献 / 许可），编号章节退场。
+- 新增 **33 个 `browser_*` 工具参考表**与 **13 个配置键的完整表**。原表只在 `plugin/README.md`，且其中 `connectTimeoutMs` 写作 `30000`、`actionTimeoutMs` 写作 `15000`，与 `plugin/lib/index.js` 的 `10000` / `30000` 不符（本轮一并修正，并把配置表的归属收敛到根 README）。
+- 版本变更史从 README 抽出为 `CHANGELOG.md`（Keep a Changelog 风格）；32 条验收 PASS 原文与 seam-probe 端到端日志移到新增的 `docs/verification.md`。
+- docs 去内部代号并改名：`provider-m2.md` → `architecture.md`、`feasibility.md` → `design-notes.md`、`profile-patch.browser-cdp.yml` → `profile-patch.browser-service.yml`（用 `git mv` 保留历史）。
+- 新增 `CONTRIBUTING.md`；README 里指向包内文件的链接全部改为绝对 GitHub URL（npm 侧对相对链接的重写行为未能实测，Cloudflare 拦截 npm 页面）。
+
 ## [0.4.1] — 2026-09-27
 
 - **只为修正 npm 页面上的 README**（0.4.0 的 tarball 里是发布前的文本，还写着「没有走 npm、名字还空着」）。**代码与 0.4.0 完全相同。**
