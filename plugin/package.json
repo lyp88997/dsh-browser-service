@@ -1,8 +1,7 @@
 {
   "name": "dsh-browser-cdp",
-  "version": "0.1.0",
-  "description": "DSH browser provider backed by a self-hosted CDP browser service (browsersvc)",
-  "private": true,
+  "version": "0.2.0",
+  "description": "DSH browser provider backed by a self-hosted CDP browser service (browsersvc): reuses the built-in browser_* tool face",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
@@ -10,14 +9,43 @@
     ".": "./lib/index.js",
     "./provider": "./lib/provider.js",
     "./dom": "./lib/dom.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
-    "README.md"
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
-    "node": ">=22"
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lyp88997/dsh-browser-service.git",
+    "directory": "plugin"
+  },
+  "homepage": "https://github.com/lyp88997/dsh-browser-service/tree/main/plugin#readme",
+  "bugs": {
+    "url": "https://github.com/lyp88997/dsh-browser-service/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "browser",
+    "cdp",
+    "chrome-headless-shell",
+    "playwright-core",
+    "headless"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1",

@@ -106,7 +106,7 @@ patch 做四件事：注册 `dsh-browser-cdp`（带 `autoStartCommand`，首次�
 
 ```bash
 node scripts/verify-daemon.mjs      # M1 守护进程：13/13
-node scripts/verify-provider.mjs    # M2 provider：65 通过，0 失败
+node scripts/verify-provider.mjs    # M2 provider：67 通过，0 失败
 ```
 
 `verify-provider.mjs` 自己起本地站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖 session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back`/`forward`/`reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`。
@@ -144,13 +144,27 @@ PASS  退出后端口释放
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | **M1** | 守护进程 + 回环代理 + 空闲回收 + 崩溃重启 + 13 项验收 | ✅ 完成 |
-| **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerBrowserProvider`），复用内置 `tool-browser` 的 33 个 `browser_*` 工具；同时 `disabled: true` 掉 `browser-electron` 与 `dsh-playwright-browser` | ✅ 完成（65 项 + DSH 内端到端，见 `docs/provider-m2.md`） |
+| **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerBrowserProvider`），复用内置 `tool-browser` 的 33 个 `browser_*` 工具；同时 `disabled: true` 掉 `browser-electron` 与 `dsh-playwright-browser` | ✅ 完成（67 项 + DSH 内端到端，见 `docs/provider-m2.md`） |
 | **M3** | univer 侧接线（保持包装脚本形态） | 已有可行做法 |
 | **M4** | 面向"任何插件"的通用 HTTP 面：`/fetch` `/screenshot` `/eval` | 待做 |
 | **M5** | CDP-over-pipe 代理，让 univer 也复用守护进程（进阶，未验证） | 待做 |
 
 设计与可行性分析见 `docs/feasibility.md`。
 
-## 8. 许可
+## 8. 打包与分发
+
+两个包都是纯 ESM、零构建，`npm pack` 即可分发（npm 缓存目录不可写时用 `npm_config_cache=/tmp/npm-cache`，不需要 root）：
+
+```bash
+npm pack --pack-destination dist                     # dsh-browser-service-<v>.tgz：守护进程 + plugin + tools + docs + 验收脚本
+(cd plugin && npm pack --pack-destination ../dist)   # dsh-browser-cdp-<v>.tgz：provider 插件（含自带 cordis.patch.yml）
+```
+
+- 根包 `files` = `bin src plugin tools docs scripts README.md LICENSE`（21 项 / 45 KB，不含 `node_modules`），保持 `private: true`，只走 tarball。
+- 插件包**独立可装**：`package.json` 声明 `"dsh": {"bundle": {"patch": "./cordis.patch.yml"}}`，装进 profile 依赖 / `dsh.profile.bundles` 后由 DSH 组合自动插入 provider、把 seam 切到 `cdp-daemon`、关掉 `browser-electron`——实测 `--dump-config` 的组合结果带 `# == dsh-builtin-browser, patched by dsh-browser-cdp`（7 项 / 19 KB）。`publishConfig.access=public`，也可 `npm publish`。
+- 运行时依赖只有 `playwright-core`（只做 CDP 客户端，**不下载浏览器**）与 `@deepseek-ai/schemastery`；`@deepseek-ai/cordis` 是可选 peer。
+- `dist/` 已 gitignore；插件包的安装方式与配置见 `plugin/README.md`。
+
+## 9. 许可
 
 MIT

@@ -1,0 +1,21 @@
+# dsh-browser-cdp 的 bundle patch：把自建 CDP provider 接进 profile 组合。
+#
+# 依次做三件事：
+#   1) 插入 provider 插件（providerId 默认 cdp-daemon，连 127.0.0.1:9333 的 browsersvc）
+#   2) 让 browser seam 选中它（覆盖内置 Electron provider 的默认选择）
+#   3) 关掉内置 Electron provider（服务器上无 GUI 库/沙箱，用不了）
+#
+# 前提：本机的 browsersvc 已起（见 README §部署），或给上面的 insert 补 autoStartCommand 让它懒拉起。
+# 注意：若你的 profile patch 里已经手写过同样三条，不要再让本包进 dsh.profile.bundles，否则 insert 会重复。
+- insert:
+    - id: browser-cdp
+      name: dsh-browser-cdp
+      config:
+        cdpUrl: http://127.0.0.1:9333
+
+- id: browser
+  config:
+    browserProvider: cdp-daemon
+
+- id: browser-electron
+  disabled: true
