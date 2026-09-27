@@ -132,8 +132,12 @@ export function collectA11y({ maxNodes, includeHidden }) {
     const states = [];
     const disabled = el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true';
     states.push(disabled ? 'disabled' : 'enabled');
-    if (el.hasAttribute('checked') || el.getAttribute('aria-checked') === 'true') states.push('checked');
-    else if (el.getAttribute('aria-checked') === 'false') states.push('unchecked');
+    // checked/selected 必须看 IDL 属性：JS 勾选不会写回 checked/selected 特性
+    const ariaChecked = el.getAttribute('aria-checked');
+    const propChecked = el.type === 'checkbox' || el.type === 'radio' ? el.checked : null;
+    if (propChecked === true || ariaChecked === 'true' || el.hasAttribute('checked')) states.push('checked');
+    else if (propChecked === false || ariaChecked === 'false') states.push('unchecked');
+    if (el.getAttribute('aria-selected') === 'true') states.push('selected');
     if (el.getAttribute('aria-expanded')) states.push(el.getAttribute('aria-expanded') === 'true' ? 'expanded' : 'collapsed');
     if (el.getAttribute('aria-hidden') === 'true') states.push('hidden');
     return states;

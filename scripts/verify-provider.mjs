@@ -204,6 +204,13 @@ try {
   check('clearField 取消勾选', cleared.cleared === true, JSON.stringify(cleared));
   const selected = await provider.selectOption(session, { target: { by: 'css', value: '#pick' }, optionText: '乙' });
   check('selectOption by text', selected.value === 'b' && selected.text === '乙', JSON.stringify(selected));
+  const a11yState = await provider.a11y(session, { maxNodes: 80 });
+  const boxStates = () => (a11yState.nodes.find((n) => n.role === 'checkbox')?.states ?? []);
+  check('a11y 反映未勾选（unchecked，看 IDL 属性而非 checked 特性）', boxStates().includes('unchecked'), JSON.stringify(boxStates()));
+  await provider.check(session, { target: { by: 'css', value: '#agree' }, checked: true });
+  const a11yChecked = await provider.a11y(session, { maxNodes: 80 });
+  const boxStates2 = a11yChecked.nodes.find((n) => n.role === 'checkbox')?.states ?? [];
+  check('a11y 反映 JS 勾选（checked）', boxStates2.includes('checked'), JSON.stringify(boxStates2));
   await provider.scroll(session, { deltaY: 1500 });
   const scrolled = await provider.execute(session, { script: 'window.scrollY' });
   check('scroll 生效', Number(scrolled.value) > 0, JSON.stringify(scrolled.value));
