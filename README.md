@@ -107,7 +107,7 @@ patch 做四件事：注册 `dsh-browser-cdp`（带 `autoStartCommand`，首次�
 
 ```bash
 node scripts/verify-daemon.mjs      # M1 守护进程：31/31
-node scripts/verify-provider.mjs    # M2 provider：83 通过，0 失败
+node scripts/verify-provider.mjs    # M2 provider：86 通过，0 失败
 ```
 
 `verify-provider.mjs` 自己起本地站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖 session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back`/`forward`/`reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`。
@@ -164,8 +164,8 @@ PASS  restart 后的实例可正常 stop  — code=0
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | **M1** | 守护进程 + 回环代理 + 空闲回收 + 崩溃重启 + 31 项验收 | ✅ 完成 |
-| **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerBrowserProvider`），复用内置 `tool-browser` 的 32 个 `browser_*` 工具；同时 `disabled: true` 掉 `browser-electron` 与 `dsh-playwright-browser` | ✅ 完成（83 项 + DSH 内端到端，见 `docs/provider-m2.md`） |
-| **M6** | 代码审查 18 条缺陷修复：公开端口凭据门、启动失败不留孤儿、stop 身份校验、保存路径准入、并发握手/连接计数、代理对截断…（见 §9、§10） | ✅ 完成（v0.3.0 / v0.3.1） |
+| **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerBrowserProvider`），复用内置 `tool-browser` 的 32 个 `browser_*` 工具；同时 `disabled: true` 掉 `browser-electron` 与 `dsh-playwright-browser` | ✅ 完成（86 项 + DSH 内端到端，见 `docs/provider-m2.md`） |
+| **M6** | 代码审查 18 条缺陷修复：公开端口凭据门、启动失败不留孤儿、stop 身份校验、保存路径准入、并发握手/连接计数、代理对截断…（见 §9、§10、§11） | ✅ 完成（v0.3.0 / v0.3.1 / v0.3.2） |
 | **M3** | univer 侧接线（保持包装脚本形态） | 已有可行做法 |
 | **M4** | 面向"任何插件"的通用 HTTP 面：`/fetch` `/screenshot` `/eval` | 待做 |
 | **M5** | CDP-over-pipe 代理，让 univer 也复用守护进程（进阶，未验证） | 待做 |
@@ -182,7 +182,7 @@ npm pack --pack-destination dist                     # dsh-browser-service-<v>.t
 (cd plugin && npm pack --pack-destination ../dist)   # dsh-browser-cdp-<v>.tgz：provider 插件（含自带 cordis.patch.yml）
 ```
 
-- 根包 `files` = `bin src plugin tools docs scripts README.md LICENSE`（21 项 / 62 KB，不含 `node_modules`），保持 `private: true`，只走 tarball。
+- 根包 `files` = `bin src plugin tools docs scripts README.md LICENSE`（21 项 / 63 KB，不含 `node_modules`），保持 `private: true`，只走 tarball。
 - 插件包**独立可装**：`package.json` 声明 `"dsh": {"bundle": {"patch": "./cordis.patch.yml"}}`，装进 profile 依赖 / `dsh.profile.bundles` 后由 DSH 组合自动插入 provider、把 seam 切到 `cdp-daemon`、关掉 `browser-electron`——实测 `--dump-config` 的组合结果带 `# == dsh-builtin-browser, patched by dsh-browser-cdp`（7 项 / 22 KB）。`publishConfig.access=public`，也可 `npm publish`。
 - 运行时依赖只有 `playwright-core`（只做 CDP 客户端，**不下载浏览器**）与 `@deepseek-ai/schemastery`；`@deepseek-ai/cordis` 是可选 peer。
 - `dist/` 已 gitignore；插件包的安装方式与配置见 `plugin/README.md`。
@@ -212,7 +212,7 @@ npm pack --pack-destination dist                     # dsh-browser-service-<v>.t
 | F17 | CLI 未透传 `--start-timeout` / `--internal-port-base` | 只能靠环境变量 | `toCfg` 补两个参数 |
 | F18 | 验收脚本失败时留进程/临时目录 | 中断即留残余 | `process.on('exit')` 清理（内核 + 所有临时 root） |
 
-同批新增/加强的验收断言（`verify-daemon.mjs` 13 → **26**（v0.3.1 起 **31**），`verify-provider.mjs` 67 → **77**（v0.3.1 起 **83**））：401/403 凭据门、ws 地址改写、状态文件权限、越界 `--port`、`--lines=0`、内核不存在/不可执行/未就绪三种启动失败 + 不留孤儿与状态文件、`stop` 身份校验与 `--force`、错误 token 无法 attach、`savePath` 准入 6 项、4 路并发 attach、代理对截断。
+同批新增/加强的验收断言（`verify-daemon.mjs` 13 → **26**（v0.3.1 起 **31**），`verify-provider.mjs` 67 → **77**（v0.3.2 起 **86**））：401/403 凭据门、ws 地址改写、状态文件权限、越界 `--port`、`--lines=0`、内核不存在/不可执行/未就绪三种启动失败 + 不留孤儿与状态文件、`stop` 身份校验与 `--force`、错误 token 无法 attach、`savePath` 准入 6 项、4 路并发 attach、代理对截断。
 
 ## 10. v0.3.1 变更（上线验证发现的 5 条缺陷）
 
@@ -228,6 +228,16 @@ v0.3.0 装进运行实例后按「重启 → 真实调用浏览器」验证，�
 
 对应新增验收：`verify-provider.mjs` 77 → **83**（守护进程 restart 真的停旧起新、token 换新、重启后同一个 session id 仍可 execute/导航、连接重建后会话复活），`verify-daemon.mjs` 26 → **31**（隔离 root 真实跑 `start → restart → stop`、restart 后 token 换新、restart 后的实例可正常 stop）。
 
-## 11. 许可
+## 11. v0.3.2 变更（F25：自启开关不会复位）
+
+v0.3.1 上线后按「停掉守护进程 → 再调用浏览器」验证，发现最后一条只会在运行进程里暴露的缺陷：
+
+| # | 缺陷 | 复现/影响 | 修复 |
+| --- | --- | --- | --- |
+| F25 | 自启「每进程只允许一次」的开关连上之后不复位 | 守护进程消失（按 `idleMs` 空闲自杀、崩溃、被 OOM 杀、手动 `browsersvc stop`）而 DSH 还活着时，provider 直接报 `browser: 无法连接 CDP 端点 http://127.0.0.1:9333（… ECONNREFUSED …）；请先运行 browsersvc start`，**再也不自启** ⇒ 浏览器一直不可用，直到重启 DSH | 连接成功后把 `#autoStarted` 复位。防风暴不受影响：同一轮失败仍只自启一次（自启后仍连不上就保持锁定，不会反复拉起） |
+
+对应新增验收：`verify-provider.mjs` 83 → **86**（冷启动自启一次后连上、守护进程消失后能再次自启、自启仍失败时不反复拉起）。三条断言都先在修复前跑过并确认会失败（旧代码 `autoStart` 只被调用 1 次）。
+
+## 12. 许可
 
 MIT

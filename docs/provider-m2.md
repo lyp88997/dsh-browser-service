@@ -43,10 +43,10 @@ patch 做四件事：注册插件（带 `autoStartCommand`，首次用浏览器�
 
 ## 3. 验收
 
-### 3.1 provider 层（83 项，零依赖、不碰外网）
+### 3.1 provider 层（86 项，零依赖、不碰外网）
 
 ```bash
-node scripts/verify-provider.mjs      # 结果：83 通过，0 失败
+node scripts/verify-provider.mjs      # 结果：86 通过，0 失败
 ```
 
 自己起本地 http 站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖：`available`、session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back/forward/reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`。

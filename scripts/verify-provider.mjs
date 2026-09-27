@@ -445,5 +445,72 @@ try {
   rmSync(f19Root, { recursive: true, force: true });
 }
 
+// ── F25：连接成功过之后自启开关必须复位 ──────────────────────────────────────
+// 守护进程会按 idleMs 空闲自杀（src/daemon.mjs），若自启「每进程只允许一次」的开关不复位，
+// 那之后每一次 browser_* 都只会报「无法连接 CDP 端点…请先运行 browsersvc start」，直到重启 DSH。
+// 复位不影响防风暴：新一轮失败仍只自启一次。
+{
+  console.log('\nF25 自启开关在连接成功后复位');
+  const f25Root = mkdtempSync(join(tmpdir(), 'svc-f25-'));
+  const prevRoot = process.env.DSH_BROWSER_SVC_ROOT;
+  process.env.DSH_BROWSER_SVC_ROOT = f25Root;
+  let autoStartCalls = 0;
+  let dead = false;
+  let disconnected = null;
+  let firstAttempt = true;
+  const fakeChromium = {
+    async connectOverCDP() {
+      if (firstAttempt) {
+        firstAttempt = false;
+        throw new Error('connect ECONNREFUSED 127.0.0.1:9418');
+      }
+      if (dead) throw new Error('connect ECONNREFUSED 127.0.0.1:9418');
+      return {
+        isConnected: () => !dead,
+        on(event, cb) {
+          if (event === 'disconnected') disconnected = cb;
+        },
+        async newContext() {
+          return { newPage: async () => ({ isClosed: () => false }), close: async () => {} };
+        },
+      };
+    },
+  };
+  const f25 = createProvider({
+    chromium: fakeChromium,
+    config: { cdpUrl: 'http://127.0.0.1:9418', connectTimeoutMs: 200, autoStartCommand: 'true', autoStartTimeoutMs: 200 },
+    autoStart: async () => {
+      autoStartCalls += 1;
+    },
+  });
+  try {
+    await f25.open('f25-1'); // 冷启动：第一次 connect 失败 → 自启 → 第二次成功
+  } catch {
+    /* 断言只看自启次数 */
+  }
+  check('冷启动自启一次后连上（开关被消费）', autoStartCalls === 1, `autoStart=${autoStartCalls}`);
+  dead = true; // 模拟守护进程空闲自杀
+  try {
+    disconnected?.();
+  } catch {
+    /* 断开回调本身不该抛 */
+  }
+  try {
+    await f25.open('f25-2');
+  } catch {
+    /* 端点确实不可用，本次必然失败 */
+  }
+  check('守护进程消失后能再次自启（F25 已复位）', autoStartCalls === 2, `autoStart=${autoStartCalls}`);
+  try {
+    await f25.open('f25-3'); // 自启后仍连不上 ⇒ 保持锁死，不许反复拉起
+  } catch {
+    /* 预期失败 */
+  }
+  check('自启后仍连不上时不反复拉起（防风暴）', autoStartCalls === 2, `autoStart=${autoStartCalls}`);
+  if (prevRoot === undefined) delete process.env.DSH_BROWSER_SVC_ROOT;
+  else process.env.DSH_BROWSER_SVC_ROOT = prevRoot;
+  rmSync(f25Root, { recursive: true, force: true });
+}
+
 console.log(`\n结果：${passed} 通过，${failures.length} 失败${failures.length ? ` →\n  - ${failures.join('\n  - ')}` : ''}`);
 process.exit(failures.length === 0 ? 0 : 1);

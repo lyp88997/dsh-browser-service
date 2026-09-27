@@ -141,6 +141,10 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
         }
       }
       const conn = this.#conn;
+      // 自启「每进程只允许一次」是为了失败时别反复拉起（防风暴）；但连接成功过之后必须复位，
+      // 否则守护进程日后因空闲自动退出（src/daemon.mjs 的 idle 自杀）或崩溃时，本进程再也不会
+      // 自启，浏览器就一直不可用，直到重启 DSH（F25）。复位不影响防风暴：新一轮失败只会再自启一次。
+      this.#autoStarted = false;
       this.#conns.add(conn);
       conn.on('disconnected', () => {
         // 只清掉自己这一条：旧连接迟到的 disconnected 不能把新连接也抹掉（F6）。
