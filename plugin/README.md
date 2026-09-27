@@ -26,16 +26,18 @@ browser_* 工具（内置 tool-browser）
 
 ### A. 作为 bundle（推荐）
 
-`dsh plugin --profile <name> <args>` 只是在 profile 目录里转发给 pnpm，所以 `add` 的既可以是包名，也可以是本地 tarball（官方文档推荐的「免构建授权」交付形式）：
+`dsh plugin --profile <name> <args>` 只是在 profile 目录里转发给 pnpm，所以 `add` 的既可以是包名，也可以是 tarball / Release 资产 URL（官方文档推荐的「免构建授权」交付形式）。**本包必须按 tarball 或 URL 装，不能写裸包名**——npm 上的 `dsh-browser-cdp` 是别人的同名包：
 
 ```bash
-dsh plugin --profile <name> add dsh-builtin-browser          # 1) 先装 seam 包
-dsh plugin --profile <name> add ./dsh-browser-cdp-0.3.3.tgz  # 2) 再装本包（追加到 dsh.profile.bundles 末尾）
-# 没有本地文件时也可以直接给 Release 资产 URL（实测可用，依赖会记为该 URL）：
-#   dsh plugin --profile <name> add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.3.3/dsh-browser-cdp-0.3.3.tgz
+dsh plugin --profile <name> add dsh-builtin-browser   # 1) 先装 seam 包（npm 上有这个包）
+dsh plugin --profile <name> add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.3.3/dsh-browser-cdp-0.3.3.tgz   # 2) 再装本包
+# 有本地文件就用 ./dsh-browser-cdp-<v>.tgz（版本号按 Releases 页最新改）
 dsh --profile <name> --dump-config | grep -E 'browserProvider|patched by|not found'
 # 期望：出现 "# == dsh-builtin-browser, patched by dsh-browser-cdp" 与 browserProvider: cdp-daemon，且没有 not found
+# 3) 重启 DSH 才生效（插件在 boot 时 import，热重载不可靠）
 ```
+
+第 1 步会顺带装上 `electron` 包（seam 包的硬依赖），但 pnpm ≥10 默认用 profile 的 `allowBuilds` 拦下它的 postinstall、不下载二进制；本包不走 electron，拦下正好。
 
 **顺序是硬要求。** 官方层顺序是 `dsh.profile.bundles` 按列表顺序叠加、后层按行胜出，而本包 patch 的第 2、3 条覆盖的是 `dsh-builtin-browser` 插入的行。本包若排在它前面，loader 只会打印
 
@@ -47,8 +49,8 @@ dsh: [dsh-browser-cdp] patch: entry "browser-electron" not found
 并静默丢掉这两条 —— seam 仍选内置 Electron provider，等于「装上了但没生效」。装反了这样恢复（`remove` 会同时移除依赖与 `dsh.profile.bundles` 里的层，`add` 追加到末尾）：
 
 ```bash
-dsh plugin --profile <name> remove dsh-browser-cdp
-dsh plugin --profile <name> add ./dsh-browser-cdp-0.3.3.tgz
+dsh plugin --profile <name> remove dsh-browser-cdp     # 裸名在这里指 profile 的依赖键，不是 npm 包名
+dsh plugin --profile <name> add ./dsh-browser-cdp-<v>.tgz
 ```
 
 手工等价做法：在 `$DSH_HOME/profiles/<name>/package.json` 的 `dependencies` 里加本包，由 dsh-config-manager 的 `reconcileBundles` 按依赖顺序补进 `dsh.profile.bundles`（追加在尾部）。

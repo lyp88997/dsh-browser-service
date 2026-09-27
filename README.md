@@ -75,19 +75,25 @@ node bin/browsersvc.mjs start \
 
 ### 给 DSH 的 `browser_*` 工具用（M2）
 
-把 M1 的守护进程接进 DSH 的 browser seam：插件只注册 provider，工具面沿用内置 `tool-browser` 的 `browser_*` 工具。
+把 M1 的守护进程接进 DSH 的 browser seam：本包只注册 provider，工具面沿用内置 `tool-browser` 的 33 个 `browser_*` 工具。装法是**官方组合包路线**——`dsh plugin --profile <name> <args>` 只是在 profile 目录里转发给 pnpm：
 
 ```bash
-# 1) 让 profile 能按裸名解析到插件（不动 profile 的 dependencies，避免 reconcileBundles 副作用）
-ln -s /home/node/DSH/dsh-browser-service/plugin $DSH_HOME/profiles/web/node_modules/dsh-browser-cdp
-# 2) 让插件解析到 playwright-core（用 profile 里已装的那份，不重复下载浏览器）
-ln -s $DSH_HOME/profiles/web/node_modules/playwright-core  node_modules/playwright-core
-# 3) 把 docs/profile-patch.browser-cdp.yml 追加到 $DSH_HOME/profiles/web/cordis.patch.yml 尾部，重启 DSH
+# 1) 先装提供 seam 与工具面的 dsh-builtin-browser（browser / browser-electron / tool-browser 三行由它插入）
+dsh plugin --profile web add dsh-builtin-browser
+# 2) 再装本包（顺序不能反：本包要按 id 覆盖它插入的行）。有本地文件就换成 ./dsh-browser-cdp-<v>.tgz
+dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.3.3/dsh-browser-cdp-0.3.3.tgz
+# 3) 校验：应出现 browserProvider: cdp-daemon 与 "# == dsh-builtin-browser, patched by dsh-browser-cdp"，且没有 not found
+dsh --profile web --dump-config | grep -E 'browserProvider|patched by|not found'
+# 4) 重启 DSH 才生效（插件在 boot 时 import，热重载不可靠）
 ```
 
-patch 做四件事：注册 `dsh-browser-cdp`（带 `autoStartCommand`，首次用浏览器时自动拉起守护进程）、seam 选 `cdp-daemon`、关掉内置 `browser-electron`、关掉 `dsh-playwright-browser`（它自带 10 个与内置**同名**的 `browser_*` 工具，两个 provider 的工具面不能共存）。
+第 1 步会顺带装上 `electron` 包（seam 包的硬依赖），但 pnpm ≥10 默认用 profile 的 `allowBuilds` 拦下它的 postinstall、不下载二进制——本包不走 electron，拦下正好（本机 profile 就是这样：有 `electron/` 目录、没有 `electron/dist/electron`）。
 
-> ⚠️ 改完 patch **必须重启 DSH**：运行中的完整 web profile 上，`patchReload: live` 会静默回滚（进程 stdout 归 docker，看不到报错）。干净进程里 boot 完全正常。
+`--profile <name>` 换成目标 profile（本机是 `web`；不存在时 `add` 会自动创建）。组合自动做四件事：插入 `browser-cdp`（带 `autoStartCommand`，首次用浏览器时自动拉起守护进程）、seam 选 `cdp-daemon`、关掉内置 `browser-electron`、关掉 `dsh-playwright-browser`（它自带 10 个与内置**同名**的 `browser_*` 工具，两个 provider 的工具面不能共存）。
+
+> ⚠️ 三个坑：①**顺序反了不报错**——只打印 `patch: entry "browser" not found` 并静默丢掉覆盖行（seam 仍是内置 Electron，等于装上没生效），恢复命令见 `plugin/README.md`；②**不要用裸包名装本包**：npm 上的 `dsh-browser-cdp` 是别人的同名包，必须用 tarball 或 Release 资产 URL；③装完**必须重启 DSH**——运行中的完整 web profile 上 `patchReload: live` 会静默回滚（进程 stdout 归 docker，看不到报错），干净进程里 boot 完全正常。
+>
+> 旧的「symlink 进 profile + 手写 `cordis.patch.yml`」只适合改源码时的临时接线（写法见 `docs/provider-m2.md`），**不要与 bundle 路线同时用**（`insert` 行会重复）。
 
 ## 4. CLI
 
@@ -186,12 +192,12 @@ pnpm pack --pack-destination dist                     # dsh-browser-service-<v>.
 ```
 
 - **两个交付物角色不同，别装错**：
-  - `dsh-browser-cdp-<v>.tgz`（7 项 / 约 24 KB）是**组合包**：`package.json` 里声明 `"dsh": {"bundle": {"patch": "./cordis.patch.yml"}}`，用 `dsh plugin --profile <name> add ./dsh-browser-cdp-<v>.tgz` 安装（GitHub Release 也挂了同样两个 tarball，可以直接给资产 URL 安装，实测可用），装完由 DSH 组合自动插入 provider、把 seam 切到 `cdp-daemon`、关掉 `browser-electron`。**前置条件**：`dsh-builtin-browser` 必须先装（`browser`/`browser-electron`/`tool-browser` 三行由它插入，本包按 id 覆盖它们），且 `dsh plugin` 只在 `dsh.profile.bundles` 里**按列表顺序**叠加、后层按行胜出。顺序反了不报错，只打印 `patch: entry "browser" not found` 并静默丢掉覆盖行（等于没生效）——安装/恢复命令、`--dump-config` 校验期望、以及「手写 patch 与 bundle 不要同时用」都写在 `plugin/README.md`。
+  - `dsh-browser-cdp-<v>.tgz`（7 项 / 约 24 KB）是**组合包**：`package.json` 里声明 `"dsh": {"bundle": {"patch": "./cordis.patch.yml"}}`，安装就是 `dsh plugin --profile <name> add ./dsh-browser-cdp-<v>.tgz`，或者直接给 GitHub Release 的资产 URL（每个 Release 都挂了这两个 tarball，实测可用）。**注意不能写裸包名**：npm 上的 `dsh-browser-cdp` 是别人的同名包。装完由 DSH 组合自动插入 provider、把 seam 切到 `cdp-daemon`、关掉 `browser-electron`。**前置条件**：`dsh-builtin-browser` 必须先装（`browser`/`browser-electron`/`tool-browser` 三行由它插入，本包按 id 覆盖它们），且 `dsh plugin` 只在 `dsh.profile.bundles` 里**按列表顺序**叠加、后层按行胜出。顺序反了不报错，只打印 `patch: entry "browser" not found` 并静默丢掉覆盖行（等于没生效）——安装/恢复命令、`--dump-config` 校验期望、以及「手写 patch 与 bundle 不要同时用」都写在 `plugin/README.md`。
   - `dsh-browser-service-<v>.tgz`（22 项 / 约 69 KB）是**守护进程工具包**，没有 `dsh.bundle`（`private: true`，按官方说明装进 profile 只会当普通依赖、不激活任何层）：解包后直接 `node bin/browsersvc.mjs start`，或 `npm i -g` 取 CLI。
   - `files` 都不含 `node_modules`；插件的运行时依赖（`playwright-core` 只做 CDP 客户端、**不下载浏览器**，以及 `@deepseek-ai/schemastery`）由 profile 的 pnpm 解析——实测两者都解析到 profile 里已有的那一份，不会重复副本。
 - 官方文档提到的 `dsh.engines` / `dsh.compatibility` 元数据本包**没写**：宿主只认 `dsh.bundle`（`@deepseek-ai/dsh-package-manifest` 的 `DshManifest` 里没有这两个字段），它们只被插件市场的发现逻辑读取，宿主既不读也不校验。
 - 验收：`node scripts/verify-bundle.mjs` —— 在一次性隔离 `DSH_HOME` 里真实执行 `add` → `--dump-config` → 顺序反例 → `remove`，断言层已追加、三条 patch 行生效、装反会警告、`remove` 同时清掉依赖与层；不碰默认 profile。
-- `dist/` 已 gitignore；每个版本另在 GitHub Release 挂上这两个 tarball（可从 Release 页直接下载或按 URL 安装）。`publishConfig.access=public`，需要时也可 `pnpm publish` 发 npm。
+- `dist/` 已 gitignore；每个版本另在 GitHub Release 挂上这两个 tarball（可从 Release 页直接下载或按 URL 安装）——这就是分发方式。**没有走 npm**：`dsh-browser-cdp` 这个名字在 npm 上已被同名第三方包占用（drscrewdriver 的 `dsh-browser-cdp`，0.17.4），本包发不上去；`plugin/package.json` 里的 `publishConfig.access=public` 只有在改成独立 scope/新名字之后才有意义。
 
 ## 9. v0.3.0 变更（代码审查 18 条缺陷修复）
 
