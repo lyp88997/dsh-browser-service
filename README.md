@@ -173,6 +173,7 @@ PASS  stop --force 可强制清理  — code=0
 两个包都是纯 ESM、零构建，`npm pack` 即可分发（npm 缓存目录不可写时用 `npm_config_cache=/tmp/npm-cache`，不需要 root）：
 
 ```bash
+chmod 755 bin/browsersvc.mjs                          # bin 必须可执行（POSIX 下 npm 全局 shim 是指向它的符号链接）
 npm pack --pack-destination dist                     # dsh-browser-service-<v>.tgz：守护进程 + plugin + tools + docs + 验收脚本
 (cd plugin && npm pack --pack-destination ../dist)   # dsh-browser-cdp-<v>.tgz：provider 插件（含自带 cordis.patch.yml）
 ```
@@ -199,7 +200,7 @@ npm pack --pack-destination dist                     # dsh-browser-service-<v>.t
 | F9 | 数值配置无校验 | `--port=99999` / 负数 / 非整数静默生效 | `src/config.mjs` 的 `LIMITS` + `num(v, key)`，越界即报错并回 JSON+exit 2 |
 | F10 | `start` 成功判据不严 | 陈旧状态文件可被误报为「已启动」 | 判据同时要求 `listening === true && supervisorPid === child.pid && port` |
 | F11 | `logs --lines` 未校验 | `--lines=0`/负数行为未定义 | 必须正整数，否则 JSON 报错 + exit 2 |
-| F12 | 打包保留本机 umask 权限 | 仓库里是 100644，打出的 tgz 里出现 0600 | 打包前 `chmod -R u+rwX,go+rX` |
+| F12 | 打包保留本机 umask 权限 | 仓库里是 100644，打出的 tgz 里出现 0600（`bin/browsersvc.mjs` 还会因为不可执行而让 POSIX 下的全局 shim 失效） | 打包前 `chmod -R u+rwX,go+rX`，并把 `bin/browsersvc.mjs` 置为 100755 |
 | F13 | `content` 截断切开代理对 | `maxChars` 落在 emoji 中间时输出半个字符 | 截断点回退一个 UTF-16 单位（不在高代理处切） |
 | F14 | `open()` 失败泄漏 BrowserContext | `newPage()` 抛错时上下文不关 | 失败路径 `await context.close()` |
 | F15 | `autoStartCommand` 超时不可配 / 经 shell | 超时写死，命令经 shell 解释 | `autoStartTimeoutMs`（默认 60s）+ `shell: false` |
