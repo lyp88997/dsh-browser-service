@@ -3,7 +3,7 @@
 三条脚本**零依赖、不依赖外网**（只用 Node 内置的 `fetch` / `WebSocket` / `http` 与真实 `browsersvc` + 本地站点）：
 
 ```bash
-node scripts/verify-daemon.mjs      # M1 守护进程 + CLI 防御：32/32
+node scripts/verify-daemon.mjs      # M1 守护进程 + CLI 防御：35/35
 node scripts/verify-provider.mjs    # M2 provider：95 通过，0 失败
 node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）：23/23
 ```
@@ -16,42 +16,66 @@ node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程
 
 **`verify-provider.mjs`（95 项）** —— 自己起本地站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖 session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back`/`forward`/`reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`、连接被换掉后会话复活（F22）、自启开关复位（F25）、保存路径准入、默认保存目录（D1：`XDG_DOWNLOAD_DIR` → 本地化 `Downloads` → `~/Downloads` 回落、目录首次写入时建出来、未配置时默认目录之外一律拒绝）、代理对截断。
 
-**`verify-daemon.mjs`（32 项）** —— 只用 Node 内置能力，自己起本地源。完整输出：
+**`verify-daemon.mjs`（35 项）** —— 只用 Node 内置能力，自己起本地源。凭据门一段额外覆盖「同一条连接上的后续请求不免检」（F27），F20 改在真实 CDP WebSocket 上验证。完整输出：
 
 ```
-PASS  守护进程启动  — 公开端口 34301 → 内部端口 9301
+PASS  守护进程启动  — 公开端口 34535 → 内部端口 9300
 PASS  状态文件含 token 且不对外开放  — mode=600
 PASS  无 token 访问公开端口被拒 (401)  — status=401
 PASS  白名单外的路径被拒 (403)  — status=403
 PASS  CDP /json/version  — Browser=HeadlessChrome/154.0.8037.57
-PASS  元数据 ws 地址被改写为走代理并带 token
+PASS  元数据 ws 地址被改写为走代理并带 token  — ws://127.0.0.1:34535/devtools/browser/eac5b966-e72e-4afa-9b7e-f543aa5332f2?token=04f61976-84af-470a-9f75-2c55556b07c1
+PASS  首个请求正常 200（同一条连接复用前的基线）  — first="HTTP/1.1 200 OK"
+PASS  同一连接上的第二个请求（无凭据 PUT /json/new）拿不到 200（F27）  — 未收到第二个响应
+PASS  代理在响应后主动收掉非升级连接（不悬挂、不占连接计数）  — closed=true
+PASS  CDP WebSocket 空闲 11s 后仍可用（F20，真正长连接路径）  — HeadlessChrome/154.0.8037.57
 PASS  公开端口只绑 127.0.0.1  — 监听=0100007F(tcp)
 PASS  内部端口只绑 127.0.0.1  — 监听=0100007F(tcp)
-PASS  两个隔离上下文（不同 browserContextId）
-PASS  上下文 A 能写 cookie
-PASS  上下文 B 看不到 A 的 cookie（隔离生效）
+PASS  两个隔离上下文（不同 browserContextId）  — 6509AA01 vs 9200BE45
+PASS  上下文 A 能写 cookie  — A="iso=ctx1"
+PASS  上下文 B 看不到 A 的 cookie（隔离生效）  — B=""
 PASS  页面真实渲染  — title="iso"
-PASS  浏览器被杀后自动重启  — browserPid 5381 → 5454
-PASS  重启后代理仍可用（自动改指向）
+PASS  浏览器被杀后自动重启  — browserPid 3812 → 3884
+PASS  重启后代理仍可用（自动改指向）  — 内部端口 9300
 PASS  空闲后自动退出  — exitCode=0
 PASS  退出后清理状态文件
 PASS  退出后端口释放
-PASS  越界 --port 被配置校验拒绝 (exit 2)
-PASS  --lines=0 被拒 (exit 2)
-PASS  --internal-port-base 覆盖默认 9300  — internalPort=19700
-PASS  内核不存在时启动失败且不留状态文件  — code=2
-PASS  内核不可执行时启动失败且不留状态文件  — code=2
-PASS  内核未就绪时启动失败（不静默成功）  — code=2
-PASS  启动失败后不留孤儿内核  — kernelPid=5559 alive=false
+PASS  越界 --port 被配置校验拒绝 (exit 2)  — code=2 out={
+  "error": "无效的 port：99999（允许 0..65535）",
+  "usage": "browsersvc start|stop|status|restart|run|logs|detect [--port=933
+PASS  --internal-port-base 覆盖默认 9300  — internalPort=19700 期望=19700
+PASS  --lines=0 被拒 (exit 2)  — code=2
+PASS  内核不存在时启动失败且不留状态文件  — code=2 out={
+  "error": "浏览器内核不存在：/nonexistent/chrome",
+  "usage": "browsersvc start|stop|status|restart|run|logs|detect [--port=9333] [--idle-ms=90000
+PASS  内核不可执行时启动失败且不留状态文件  — code=2 out={
+  "error": "浏览器内核不可执行：/tmp/browsersvc-verify-stuck-mnDyHl/fake-kernel.mjs",
+  "usage": "browsersvc start|stop|status|restart|run|logs|dete
+PASS  内核未就绪时启动失败（不静默成功）  — code=2 out={
+  "error": "浏览器在 1500ms 内未就绪（见 /tmp/browsersvc-verify-stuck-mnDyHl/service.log）",
+  "usage": "browsersvc start|stop|status|restart|run|log
+PASS  启动失败后不留孤儿内核  — kernelPid=4055 alive=false
 PASS  启动失败后不留状态文件
-PASS  stop 身份校验：拒绝杀不匹配的进程  — code=1
+PASS  stop 身份校验：拒绝杀不匹配的进程  — code=1 alive=true
 PASS  stop --force 可强制清理  — code=0
-PASS  restart 前置：隔离实例可启动  — code=0
-PASS  restart 真的停旧起新（F23）  — code=0
-PASS  restart 后 token 换新  — e033d630 → 8efe1748
+PASS  restart 前置：隔离实例可启动  — code=0 {
+  "started": true,
+  "pid": 4091,
+  "browserPid": 4098,
+  "port": 32985,
+  "browserVersion": "HeadlessChrome/154.0.803
+PASS  restart 真的停旧起新（F23）  — code=0 {
+  "restarted": true,
+  "stopped": true,
+  "started": true,
+  "pid": 4160,
+  "browserPid": 4167,
+  "port": 44693,
+  "browserVersion": "HeadlessChrome/154.0.803
+PASS  restart 后 token 换新  — f73cc755 → a14e7475
 PASS  restart 后的实例可正常 stop  — code=0
 
-32/32 通过
+35/35 通过
 ```
 
 ## 真实 DSH 内端到端（手动，不属于自动验收）

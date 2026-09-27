@@ -62,6 +62,17 @@ export function createProxy({ listenPort, targetPort, host = '127.0.0.1', token,
       const addr = server.address();
       return addr && typeof addr === 'object' ? addr.port : listenPort;
     };
+    /** 把头部里的 connection 改写成 close。代理每条连接只解析首个请求头，之后是裸管道，
+     *  若允许 keep-alive，同一连接上的第二个请求就会绕过凭据门与白名单（F27）。 */
+    const withConnectionClose = (head) =>
+      /(^|\r\n)connection:[^\r\n]*/i.test(head) ? head.replace(/(^|\r\n)connection:[^\r\n]*/i, '$1connection: close') : `${head}\r\nconnection: close`;
+    /** 同一个改写的 Buffer 版本：只动头部，body 原样保留。 */
+    const pinClose = (buf) => {
+      const split = buf.indexOf('\r\n\r\n');
+      if (split === -1) return buf;
+      return Buffer.concat([Buffer.from(withConnectionClose(buf.subarray(0, split).toString('latin1')), 'latin1'), buf.subarray(split)]);
+    };
+
     /** 把元数据 JSON 里的 WebSocket 地址改成走代理，并附上 token。 */
     const rewriteMeta = (body) =>
       Buffer.from(
@@ -105,10 +116,34 @@ export function createProxy({ listenPort, targetPort, host = '127.0.0.1', token,
       const allowed = path.startsWith('/devtools/') || ((method === 'GET' || method === 'HEAD') && (META.has(path) || path === '/json/protocol'));
       if (!allowed) return reject(403, `path not allowed: ${url.pathname}`);
 
-      const up = forward(first);
-      if (!wantsMeta) {
-        client.unshift(first);
+      // WebSocket 升级请求必须保持长连接；其余请求一律 pin 成 close，避免同一条连接上的
+      // 后续请求跳过凭据门与白名单（F27）。
+      const isUpgrade = typeof headers.upgrade === 'string' && headers.upgrade.length > 0;
+      const upFirst = isUpgrade ? first : pinClose(first);
+      const up = forward(upFirst);
+      if (isUpgrade) {
+        // WebSocket 升级：必须双向 pipe（长连接）。
+        client.unshift(upFirst);
         client.pipe(up);
+        up.pipe(client);
+        return;
+      }
+      if (!wantsMeta) {
+        // 普通 HTTP（非升级）：只单向转发，绝不把客户端接回上游 —— 代理只检查过首个请求头，
+        // 再接回去就等于同一条连接上的后续请求全部免检（F27）。非升级请求都是一次性的，
+        // 上游空闲 2s 就收尾，免得连接悬挂（连接计数会挡住空闲自杀）。
+        const finish = () => {
+          if (!client.destroyed) client.end();
+          settle();
+        };
+        let idle = setTimeout(finish, 2000);
+        idle.unref?.();
+        up.on('data', () => {
+          clearTimeout(idle);
+          idle = setTimeout(finish, 2000);
+        });
+        up.on('close', () => clearTimeout(idle));
+        up.write(upFirst);
         up.pipe(client);
         return;
       }
@@ -131,16 +166,16 @@ export function createProxy({ listenPort, targetPort, host = '127.0.0.1', token,
         if (body.length < len) return;
         up.off('data', onResp);
         up.pause();
-        const head = status === 200 ? headText.replace(/content-length:\s*\d+/i, `content-length: ${rewriteMeta(body.subarray(0, len)).length}`) : headText;
+        const head = withConnectionClose(status === 200 ? headText.replace(/content-length:\s*\d+/i, `content-length: ${rewriteMeta(body.subarray(0, len)).length}`) : headText);
         const payload = status === 200 ? rewriteMeta(body.subarray(0, len)) : body.subarray(0, len);
         client.write(`${head}\r\n\r\n`);
         client.write(payload);
         const rest = body.subarray(len);
         if (rest.length) client.write(rest);
-        client.pipe(up);
-        up.pipe(client);
+        // 这条连接不能交还给 keep-alive：代理只解析过一个请求头，之后是裸管道（F27）。
+        client.end();
       };
-      up.write(first);
+      up.write(upFirst);
       up.on('data', onResp);
     };
 

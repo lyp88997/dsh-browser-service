@@ -48,7 +48,7 @@ node scripts/verify-provider.mjs      # 结果：95 通过，0 失败
 
 自己起本地 http 站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖：`available`、session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back/forward/reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`、保存路径准入（F1）与默认保存目录（D1）、掉线后会话复活（F22）、默认自启命令。
 
-守护进程/CLI 层：`node scripts/verify-daemon.mjs`（32 项）；组合包安装路径：`node scripts/verify-bundle.mjs`（23 项）。
+守护进程/CLI 层：`node scripts/verify-daemon.mjs`（35 项）；组合包安装路径：`node scripts/verify-bundle.mjs`（23 项）。
 
 ### 3.2 DSH 内端到端（seam → provider → 守护进程 → CDP）
 

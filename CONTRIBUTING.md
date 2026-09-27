@@ -8,7 +8,7 @@
 node scripts/verify-daemon.mjs && node scripts/verify-provider.mjs && node scripts/verify-bundle.mjs
 ```
 
-并在 PR 描述里贴上三个计数（当前基线：32/32、88 通过 0 失败、23/23）。
+并在 PR 描述里贴上三个计数（当前基线：35/35、95 通过 0 失败、23/23）。
 
 两条硬约束：
 

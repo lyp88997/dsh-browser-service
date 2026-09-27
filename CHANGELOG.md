@@ -3,7 +3,17 @@
 本文件记录每个版本的变更与**真实缺陷编号**（F = 代码审查/上线验证发现的缺陷，B = 按官方打包文档核对发现的问题，U = v0.4.0 合并交付物的改动，F26 见 v0.4.0）。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-验收计数随版本推进：`verify-daemon` 13 → 26 → 31 → **32**，`verify-provider` 67 → 77 → 83 → 86 → 88 → **95**，`verify-bundle` 16 → **23**。
+验收计数随版本推进：`verify-daemon` 13 → 26 → 31 → 32 → **35**，`verify-provider` 67 → 77 → 83 → 86 → 88 → **95**，`verify-bundle` 16 → **23**。
+
+## [0.4.4] — 2026-09-27
+
+起因：完整测试（活实例 + 三条验收套件）时，用**复用连接**的 HTTP 客户端发现同一条 TCP 连接上的第二个请求可以绕过凭据门与白名单。
+
+### 修复
+
+- **F27 代理 keep-alive 免检**：代理每条连接只在 `onData` 里解析一次请求头，解析完即 `client.pipe(up); up.pipe(client)` 变成裸管道。于是先带真 token 请求一次 `GET /json/version`（200），再在同一条连接上 `PUT /json/new`（无凭据）也拿到 200（应 403），错 token 同样不被拦。危害有限（要先持有合法 token，而持有 token 本就能走 `/devtools/*`），但「挡掉 `/json/new|close|activate`」的安全承诺不成立。
+  - 修法：非 WebSocket（`Upgrade`）请求一律按 `connection: close` 转发；元数据分支回完即 `client.end()`；普通 HTTP 分支改为**单向**转发（不再把客户端接回上游），上游空闲 2s 收尾，连接不留悬挂；CDP WebSocket 长连接仍双向 pipe（F20 的行为不变）。
+- 验收：`verify-daemon.mjs` 32 → **35**。原来那条「`/json/protocol` 长连接空闲 11s 仍存活」的 F20 断言（F27 修好后本就不该再成立）换成「**CDP WebSocket** 空闲 11s 后仍可用」，并新增「同一连接上的第二个请求拿不到 200」「代理在响应后主动收掉非升级连接」。
 
 ## [0.4.3] — 2026-09-27
 

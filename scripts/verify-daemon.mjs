@@ -202,7 +202,8 @@ const version = await probe(port, 2000, token);
 check('CDP /json/version', version?.['Protocol-Version'] === '1.3', `Browser=${version?.Browser}`);
 check('元数据 ws 地址被改写为走代理并带 token', typeof version?.webSocketDebuggerUrl === 'string' && new URL(version.webSocketDebuggerUrl).port === String(port) && version.webSocketDebuggerUrl.includes('token='), version?.webSocketDebuggerUrl);
 
-// 请求头超时（10s）必须在头收全后撤掉，否则已建立的连接（CDP WebSocket 长连接）会在 10s 后被 408 拆掉（F20）。
+// 同一条连接上的第二个请求也必须过凭据门与白名单：代理只解析首个请求头，若放行 keep-alive，
+// 后续请求就是绕过检查的裸管道（F27）。
 {
   const sock = net.createConnection({ host: '127.0.0.1', port });
   const chunks = [];
@@ -213,13 +214,43 @@ check('元数据 ws 地址被改写为走代理并带 token', typeof version?.we
   });
   await new Promise((r) => sock.once('connect', r));
   sock.write(`GET /json/protocol HTTP/1.1\r\nhost: 127.0.0.1\r\nauthorization: Bearer ${token}\r\nconnection: keep-alive\r\n\r\n`);
-  await sleep(1500);
-  const first = chunks.length > 0 ? chunks[0].toString('latin1') : '';
-  const ok200 = first.startsWith('HTTP/1.1 200');
-  await sleep(11_000);
-  const all = Buffer.concat(chunks).toString('latin1');
-  check('长连接空闲 11s 仍存活、不会收到 408（F20）', ok200 && !closed && !/^HTTP\/1\.1 408/m.test(all), `closed=${closed} first="${first.split('\r\n')[0]}"`);
+  await sleep(800);
+  const firstText = Buffer.concat(chunks).toString('latin1');
+  const firstOk = firstText.startsWith('HTTP/1.1 200');
+  const firstLen = firstText.length;
+  let secondText = '';
+  let writeErr = '';
+  try {
+    sock.write(`PUT /json/new?about:blank HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: keep-alive\r\n\r\n`);
+    await sleep(800);
+    secondText = Buffer.concat(chunks).toString('latin1').slice(firstLen);
+  } catch (e) {
+    writeErr = `写入失败: ${e.code ?? e.message}`;
+  }
+  check('首个请求正常 200（同一条连接复用前的基线）', firstOk, `first="${firstText.split('\r\n')[0]}"`);
+  check(
+    '同一连接上的第二个请求（无凭据 PUT /json/new）拿不到 200（F27）',
+    !secondText.includes('HTTP/1.1 200'),
+    secondText ? `second="${secondText.split('\r\n')[0]}"` : `未收到第二个响应${writeErr ? `（${writeErr}）` : ''}`,
+  );
+  await sleep(4000);
+  check('代理在响应后主动收掉非升级连接（不悬挂、不占连接计数）', closed === true, `closed=${closed}`);
   sock.destroy();
+}
+
+// 真正需要长连接的是 CDP WebSocket：空闲 11s 后仍须可用（头超时定时器必须在头收全后就撤掉，F20）。
+{
+  const cdp = connectCdp(version.webSocketDebuggerUrl);
+  await cdp.ready;
+  await sleep(11_000);
+  let product = '';
+  try {
+    product = (await cdp.send('Browser.getVersion')).product;
+  } catch (e) {
+    product = `失败: ${e.message}`;
+  }
+  check('CDP WebSocket 空闲 11s 后仍可用（F20，真正长连接路径）', /Chrome\//.test(product), product);
+  cdp.close();
 }
 
 // ── 3. 只绑回环 ───────────────────────────────────────────────────────────
