@@ -2,16 +2,18 @@
 /**
  * browsersvc —— 单例浏览器 CDP 守护进程的 CLI。
  *
- *   browsersvc start|stop|status|restart|run|logs|detect [--port=9333] [--idle-ms=900000]
+ *   browsersvc start|stop|status|restart|run|logs|ops|console|network|har|cookies|detect [--port=9333] [--idle-ms=900000]
  *              [--kernel=/path/to/chrome] [--wrapper=/path/to/wrapper.sh] [--root=/path/to/state]
  *
  * 约定：CDP 只监听 127.0.0.1；对外端口由本地代理暴露，代理同时负责空闲回收。
  */
 import { spawn } from 'node:child_process';
-import { existsSync, openSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { detectKernels, ensureRoot, logFile, readConfigFile, resolveConfig, stateFile } from '../src/config.mjs';
 import { isAlive, probeVersion, readState, runSupervisor } from '../src/daemon.mjs';
+import { readConsole, readNetwork, readOps } from '../src/opslog.mjs';
 
 const BIN = fileURLToPath(new URL('./browsersvc.mjs', import.meta.url));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -182,6 +184,227 @@ function logs(cfg, flags) {
   print({ file, lines: lines.slice(-n) });
 }
 
+/**
+ * 观测：读回插件写下的最近 N 次浏览器操作（工具动作 / 耗时 / 成败 / 错误原因）。
+ * 默认人话表格（一行一次操作），`--json` 给机器读。
+ */
+function ops(cfg, flags) {
+  const n = Number(flags.lines ?? 20);
+  if (!Number.isInteger(n) || n <= 0) print({ error: `invalid --lines: ${flags.lines}（需要正整数）` }, 2);
+  const { file, total, entries } = readOps({ root: cfg.root, lines: n });
+  if (flags.json === true) print({ file, total, entries });
+  if (entries.length === 0) print({ file, total, reason: '暂无操作记录（插件跑过一次 browser_* 工具后就有了）' });
+  const rows = entries.map((e) => {
+    const time = Number.isFinite(e.at) ? new Date(e.at).toISOString().slice(11, 23) : '-';
+    const ms = Number.isFinite(e.ms) ? `${e.ms}ms` : '-';
+    const where = `${e.session ?? '-'}/${e.tab ?? '-'}`;
+    const detail = e.error ?? e.result ?? '';
+    return `${time}  ${e.ok ? '✓' : '✗'}  ${String(e.action ?? '?').padEnd(14)} ${ms.padStart(7)}  ${where.padEnd(8)}  ${detail}`;
+  });
+  process.stdout.write(`${rows.join('\n')}\n\n共 ${entries.length}/${total} 条 · ${file}\n`);
+  process.exit(0);
+}
+
+/**
+ * 控制台 / 网络观测流：默认人话表格（一行一条），`--json` 给机器读。
+ */
+function stream(cfg, flags, kind) {
+  const n = Number(flags.lines ?? 40);
+  if (!Number.isInteger(n) || n <= 0) print({ error: `invalid --lines: ${flags.lines}（需要正整数）` }, 2);
+  const read = kind === 'console' ? readConsole : readNetwork;
+  const { file, total, entries } = read({ root: cfg.root, lines: n });
+  if (flags.json === true) print({ file, total, entries });
+  if (entries.length === 0) print({ file, total, reason: `暂无${kind === 'console' ? '控制台' : '网络'}记录（插件跑过一次 browser_* 工具后就有了）` });
+  const time = (at) => (Number.isFinite(at) ? new Date(at).toISOString().slice(11, 23) : '-');
+  const where = (e) => `${e.session ?? '-'}/${e.tab ?? '-'}`;
+  const rows = kind === 'console'
+    ? entries.map((e) => `${time(e.at)}  ${String(e.type ?? '?').padEnd(10)} ${where(e).padEnd(8)} ${e.text ?? ''}`)
+    : entries.map((e) => {
+      const status = e.status === undefined ? (e.error ?? '-') : String(e.status);
+      const ms = Number.isFinite(e.ms) ? `${e.ms}ms` : '-';
+      return `${time(e.at)}  ${String(e.phase ?? '?').padEnd(8)} ${status.padEnd(6)} ${ms.padStart(7)}  ${e.method ?? ''} ${e.url ?? ''}`;
+    });
+  process.stdout.write(`${rows.join('\n')}\n\n共 ${entries.length}/${total} 条 · ${file}\n`);
+  process.exit(0);
+}
+
+/**
+ * 导出某个会话的 HAR。playwright 只在 context 关闭时写盘，所以这里只找已落盘的文件：
+ * 不给 `--out` 就报路径与大小；给了则复制过去（拒绝覆盖已有文件）。
+ */
+function har(cfg, flags) {
+  const dir = join(cfg.root, 'har');
+  const all = existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith('.har')).sort() : [];
+  if (all.length === 0) print({ har: null, dir, reason: '还没有 HAR（插件跑过一次 browser_* 工具、且会话已关闭后才会落盘）' }, 1);
+  const wanted = typeof flags.session === 'string' && flags.session ? all.filter((name) => name.endsWith(`-${flags.session}.har`)) : all;
+  const pick = wanted[wanted.length - 1];
+  if (!pick) print({ har: null, dir, reason: `没有会话 ${flags.session} 的 HAR`, files: all }, 1);
+  const src = join(dir, pick);
+  const bytes = statSync(src).size;
+  if (typeof flags.out === 'string' && flags.out) {
+    const dest = resolve(flags.out);
+    if (existsSync(dest)) print({ error: `拒绝覆盖已有文件：${dest}` }, 1);
+    copyFileSync(src, dest);
+    print({ har: dest, from: src, bytes, sessions: all.length });
+  }
+  print({ har: src, bytes, sessions: all.length, files: all });
+}
+
+/**
+ * cookie / localStorage 的导出与注入。
+ *
+ * 为什么不用 playwright 的 context.cookies()/addCookies()：插件给每个会话建的是独立（incognito）
+ * 上下文，而第二条 connectOverCDP 连接里 playwright 只把默认上下文当成自己的 context —— 实测
+ * context.addCookies() 写进了默认上下文的 jar，页面 document.cookie 根本看不到。所以这里走
+ * 浏览器级 CDP 会话：Target.getBrowserContexts 拿到真实上下文 id，再按 id 用 Storage.getCookies /
+ * Storage.setCookies 读写；localStorage 走可见页面的 evaluate。
+ *
+ *   browsersvc cookies [--url=https://a.com] [--json | --export=file | --import=file]
+ */
+const COOKIE_FIELDS = ['name', 'value', 'domain', 'path', 'expires', 'httpOnly', 'secure', 'sameSite'];
+
+/** 只留 cookie 的稳定字段：CDP 读出来还带 size/priority/partitionKey 等，写回时没必要也不该带。 */
+const pickCookie = (cookie) => Object.fromEntries(COOKIE_FIELDS.filter((k) => cookie[k] !== undefined).map((k) => [k, cookie[k]]));
+
+function hostOf(raw) {
+  try {
+    return new URL(raw).hostname;
+  } catch {
+    return null;
+  }
+}
+
+/** `--url` 过滤：cookie 的 domain 去前导点后与主机做后缀匹配；localStorage 只认同主机页面。 */
+function urlMatcher(raw) {
+  if (typeof raw !== 'string' || raw === '') return { cookie: () => true, page: () => true };
+  const host = hostOf(raw);
+  if (!host) print({ error: `invalid --url: ${raw}（需要 http(s) URL）` }, 2);
+  return {
+    cookie: (cookie) => {
+      const domain = String(cookie.domain ?? '').replace(/^\./, '');
+      return domain !== '' && (host === domain || host.endsWith(`.${domain}`));
+    },
+    page: (url) => hostOf(url) === host,
+  };
+}
+
+/** 连运行中的守护进程（带 service.json 里的 token），拿浏览器级 CDP 会话与活着的会话上下文 id。 */
+async function cdpBrowserSession(cfg) {
+  const state = readState(cfg.root);
+  if (!state?.token) print({ error: `浏览器服务没在运行（没有 ${stateFile(cfg.root)}）——先 browsersvc start` }, 1);
+  const { chromium } = await import('playwright-core');
+  let browser;
+  try {
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${state.port ?? cfg.port}/`, { headers: { Authorization: `Bearer ${state.token}` } });
+  } catch (error) {
+    print({ error: `连不上运行中的浏览器服务：${error.message}` }, 1);
+  }
+  const bs = await browser.newBrowserCDPSession();
+  const { browserContextIds = [], defaultBrowserContextId } = await bs.send('Target.getBrowserContexts');
+  return { browser, bs, contexts: browserContextIds.filter((id) => id !== defaultBrowserContextId) };
+}
+
+/** 读可见页面的 localStorage（按 origin 去重，只读；页面正在跳转就跳过，不打断导出）。 */
+async function readOrigins(browser, match) {
+  const seen = new Map();
+  for (const context of browser.contexts()) {
+    for (const page of context.pages()) {
+      const url = page.url();
+      let origin;
+      try {
+        origin = new URL(url).origin;
+      } catch {
+        continue;
+      }
+      if (origin === 'null' || seen.has(origin) || !match(url)) continue;
+      try {
+        seen.set(origin, { origin, items: await page.evaluate(() => Object.fromEntries(Object.entries(window.localStorage))) });
+      } catch {
+        /* 跳过不可读的页面 */
+      }
+    }
+  }
+  return [...seen.values()];
+}
+
+async function cookies(cfg, flags) {
+  const match = urlMatcher(flags.url);
+  const { browser, bs, contexts } = await cdpBrowserSession(cfg);
+  const done = async () => {
+    await bs.detach().catch(() => {});
+    await browser.close().catch(() => {});
+  };
+
+  if (typeof flags.import === 'string' && flags.import) {
+    const file = resolve(flags.import);
+    if (!existsSync(file)) print({ error: `找不到导入文件：${file}` }, 1);
+    let data;
+    try {
+      data = JSON.parse(readFileSync(file, 'utf8'));
+    } catch (error) {
+      print({ error: `导入文件不是合法 JSON：${error.message}` }, 2);
+    }
+    if (contexts.length === 0) print({ error: '没有活着的会话上下文 —— cookie 属于运行中的浏览器上下文，先用 browser_open 打开一个会话再导入' }, 1);
+    const list = (data.contexts ?? []).flatMap((c) => c.cookies ?? []).map(pickCookie);
+    let cookies = 0;
+    for (const browserContextId of contexts) {
+      if (list.length === 0) break;
+      await bs.send('Storage.setCookies', { browserContextId, cookies: list });
+      cookies += list.length;
+    }
+    const origins = data.origins ?? [];
+    let items = 0;
+    for (const context of browser.contexts()) {
+      for (const page of context.pages()) {
+        let origin;
+        try {
+          origin = new URL(page.url()).origin;
+        } catch {
+          continue;
+        }
+        const pairs = Object.entries(origins.find((o) => o.origin === origin)?.items ?? {});
+        if (pairs.length === 0) continue;
+        await page.evaluate((kv) => { for (const [k, v] of kv) window.localStorage.setItem(k, v); }, pairs).catch(() => {});
+        items += pairs.length;
+      }
+    }
+    await done();
+    print({ imported: file, contexts: contexts.length, cookies, origins: origins.length, items });
+  }
+
+  const exported = [];
+  for (const browserContextId of contexts) {
+    const { cookies: list = [] } = await bs.send('Storage.getCookies', { browserContextId });
+    const picked = list.map(pickCookie).filter(match.cookie);
+    if (picked.length > 0) exported.push({ browserContextId, cookies: picked });
+  }
+  const origins = await readOrigins(browser, match.page);
+  const total = exported.reduce((n, c) => n + c.cookies.length, 0);
+  const payload = { exportedAt: new Date().toISOString(), contexts: exported, origins };
+
+  if (typeof flags.export === 'string' && flags.export) {
+    const file = resolve(flags.export);
+    if (existsSync(file)) print({ error: `拒绝覆盖已有文件：${file}` }, 1);
+    writeFileSync(file, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
+    await done();
+    print({ exported: file, cookies: total, contexts: exported.length, origins: origins.length });
+  }
+  if (flags.json === true) {
+    await done();
+    print({ ...payload, liveSessions: contexts.length });
+  }
+  await done();
+  if (total === 0 && origins.length === 0) {
+    print({ cookies: 0, liveSessions: contexts.length, reason: '没有可导出的 cookie（会话还没访问过站点？）' }, 1);
+  }
+  const rows = exported.flatMap(({ cookies: list }) => list.map((c) => {
+    const flagsText = `${c.httpOnly ? '  [httpOnly]' : ''}${c.secure ? '  [secure]' : ''}`;
+    return `${String(c.domain ?? '').padEnd(24)} ${c.name}=${String(c.value ?? '').slice(0, 60)}${flagsText}`;
+  }));
+  process.stdout.write(`${rows.join('\n')}\n\n共 ${total} 条 cookie · ${origins.length} 个 origin 的 localStorage · ${contexts.length} 个活会话上下文\n`);
+  process.exit(0);
+}
+
 function detect(cfg) {
   print({
     candidates: detectKernels(),
@@ -191,7 +414,7 @@ function detect(cfg) {
 }
 
 const { cmd, flags } = parse(process.argv.slice(2));
-const USAGE = 'browsersvc start|stop|status|restart|run|logs|detect [--port=9333] [--idle-ms=900000] [--kernel=...] [--wrapper=...] [--root=...] [--start-timeout=30000] [--internal-port-base=9300]';
+const USAGE = 'browsersvc start|stop|status|restart|run|logs|ops|console|network|har|cookies|detect [--port=9333] [--idle-ms=900000] [--kernel=...] [--wrapper=...] [--root=...] [--start-timeout=30000] [--internal-port-base=9300] [--lines=20] [--out=file] [--session=s1] [--url=https://a.com] [--export=file] [--import=file]';
 
 try {
   const cfg = toCfg(flags);
@@ -223,6 +446,21 @@ try {
       break;
     case 'logs':
       logs(cfg, flags);
+      break;
+    case 'ops':
+      ops(cfg, flags);
+      break;
+    case 'console':
+      stream(cfg, flags, 'console');
+      break;
+    case 'network':
+      stream(cfg, flags, 'network');
+      break;
+    case 'har':
+      har(cfg, flags);
+      break;
+    case 'cookies':
+      await cookies(cfg, flags);
       break;
     case 'detect':
       detect(cfg);

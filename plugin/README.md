@@ -16,6 +16,8 @@ browser_* 工具（33 个，来自依赖 dsh-builtin-browser 的 tool-browser）
 | `lib/compat.js` | 启动期探测：校验接缝导出面（`browser` 的函数默认导出 / `tool-browser` 的 `name`+`apply`+`inject`）、读宿主与接缝版本，不符时打一句人话并安静退出 |
 | `lib/provider.js` | `BrowserProvider` 全部成员（seam 契约见 `dsh-builtin-browser/lib/browser/types.d.ts`）；含默认自启 `defaultAutoStartCommand()` |
 | `lib/dom.js` | 页面内取快照 / a11y / 表单操作注入的脚本（含 checked 状态、代理对安全截断） |
+| `lib/panel.js` | 网页面板的**宿主半边**：只读路由 `GET /browser-service/panel.json`（`exact`、只 GET/HEAD、`no-store`、载荷不含绝对路径），经 `ctx.inject(['webServer'], …)` 挂载 |
+| `client.js` | 网页面板的**客户端半边**：手写零构建，走 `window.__ModuleLoader__` 协议、只 `require('react')`，`apply` 注册到 `shell.overlay` |
 | `shims/browser.js` | `export * from 'dsh-builtin-browser/browser'`（含 default）：把接缝挂进 profile |
 | `shims/tool-browser.js` | `export * from 'dsh-builtin-browser/tool-browser'`（**源模块没有 default**）：挂 33 个工具 |
 | `cordis.patch.yml` | bundle patch：`insert` 接缝 `browser`（选 `cdp-daemon`）、`tool-browser`、`browser-cdp` provider |
@@ -33,7 +35,8 @@ browser_* 工具（33 个，来自依赖 dsh-builtin-browser 的 tool-browser）
 ## 验证
 
 - 插件行为：`node scripts/verify-provider.mjs`（110 项零依赖，真实 `browsersvc` + 本地站点）。
-- 组合包安装路径（官方 `dsh plugin` 流程）：`node scripts/verify-bundle.mjs`（33 项，一次性隔离 `DSH_HOME`；含启动期探测的四类坏形状与工具面静态计数）。
+- 组合包安装路径（官方 `dsh plugin` 流程）：`node scripts/verify-bundle.mjs`（40 项，一次性隔离 `DSH_HOME`；含启动期探测的四类坏形状、工具面静态计数与客户端半边 5c 段）。
+- 观测面与面板：`node scripts/verify-data.mjs`（45 项，真实 `browsersvc` + 本地站点；ops/console/network/har/cookies + `panel.json` 路由）。
 - 守护进程与 CLI：`node scripts/verify-daemon.mjs`（35 项）。
 - DSH 版本矩阵：`node scripts/verify-matrix.mjs --dsh <bin> … --smoke`（4 个宿主版本 × 12 项）。
 

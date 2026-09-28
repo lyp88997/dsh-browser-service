@@ -232,6 +232,40 @@ console.log('5b. 版本适配（启动期探测 / 宿主 peer / 工具面）');
     `count=${toolNames.size} a11y=${toolNames.has("'browser_a11y'")}`);
 }
 
+// 5c) 客户端半边（网页面板）：loader 协议 + cordis 插件形状 + 只点平台种子表
+console.log('5c. 客户端半边（网页面板）');
+{
+  const res = spawnSync(process.execPath, [join(HERE, 'lib', 'client-probe.mjs'), installed, PKG], {
+    cwd: profileDir, env, encoding: 'utf8', timeout: 60_000,
+  });
+  const line = (res.stdout ?? '').split('\n').find((l) => l.startsWith('{')) ?? '{}';
+  let c = {};
+  try { c = JSON.parse(line); } catch { /* 保持空 */ }
+  const installedPkg = JSON.parse(readFileSync(join(installed, 'package.json'), 'utf8'));
+
+  check('tarball 里带 plugin/client.js', existsSync(join(installed, 'plugin', 'client.js')));
+  check('package.json 声明 exports["./client"] 与 dsh.client.platform=web',
+    installedPkg.exports?.['./client'] === './plugin/client.js' && installedPkg.dsh?.client?.platform === 'web',
+    JSON.stringify({ client: installedPkg.exports?.['./client'], dsh: installedPkg.dsh?.client }));
+  check('客户端入口走 window.__ModuleLoader__.load 且 id = 包名',
+    c.imported === 'ok' && c.loads?.length === 1 && c.loads[0]?.id === PKG && c.loads[0]?.factory === 'function',
+    JSON.stringify({ imported: c.imported, loads: c.loads, stderr: (res.stderr ?? '').trim().split('\n')[0] }));
+  check('factory 返回标准 cordis 插件（apply + inject: slots）',
+    c.apply === 'function' && (c.inject ?? []).includes('slots'), JSON.stringify({ apply: c.apply, inject: c.inject }));
+  check('apply 把看板注册到 shell.overlay（list 槽，自带 id）',
+    c.injected === 'shell.overlay' && c.register?.name === 'shell.overlay' && typeof c.register?.id === 'string',
+    JSON.stringify({ injected: c.injected, register: c.register }));
+  check('看板组件能渲染（没有数据时回落胶囊）', c.render === 'null', String(c.render));
+  const seeds = new Set([
+    'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client',
+    '@deepseek-ai/cordis', '@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-client-ui-slots',
+    '@deepseek-ai/dsh-client-ui-primitives', '@deepseek-ai/dsh-client-ui-dockkit',
+  ]);
+  check('客户端只 require 平台种子表内的包（否则要打包或写进 dsh.client.inject）',
+    (c.requires ?? []).length > 0 && (c.requires ?? []).every((name) => seeds.has(name)),
+    JSON.stringify(c.requires));
+}
+
 // 6) 官方移除命令：依赖与层同时移除
 console.log('6. dsh plugin --profile … remove <pkg>');
 {

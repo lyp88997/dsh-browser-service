@@ -8,12 +8,14 @@
  * - 元素定位语义 css / text / xpath，text 为「精确优先 → 包含，深层优先」；
  * - history 记录在会话内，`result` 是截断后的文本，`at` 是 epoch 毫秒。
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { defaultRoot } from '../../src/config.mjs';
 import { collectA11y, collectContent, collectScrape, collectSnapshot, detectChallengeMarkers, fillFields, readElementValue } from './dom.js';
+import { appendConsole, appendNetwork, appendOp, clip, clipJson } from '../../src/opslog.mjs';
 
 /**
  * 未配置 autoStartCommand 时的默认自启命令：用本包自带的守护进程 CLI（bin/browsersvc.mjs）。
@@ -56,6 +58,18 @@ export function defaultDownloadDir() {
 const SESSION_UNKNOWN = 'BROWSER_SESSION_UNKNOWN';
 const TAB_UNKNOWN = 'BROWSER_TAB_UNKNOWN';
 const TAB_LIMIT = 'BROWSER_TAB_LIMIT';
+
+// P3：HAR 保留的会话数（每会话一份 <root>/har/<ts>-<sessionId>.har，超了就删最旧的）。
+const HAR_KEEP = 10;
+
+// P3 观测：通用追踪要跳过的公共方法 —— 已自带 #record 的入口（避免重复记账）与生命周期方法。
+const TRACED_SKIP = new Set([
+  'openUrl', 'navigate', 'execute', 'click', 'type', 'fill', 'download', 'flushAuth', 'restoreAuth',
+  'available', 'open', 'dispose', 'traced',
+  // reset 会清空 session.history/seq，而追踪是「跑完再记账」⇒ 记它反而把刚清空的账本又写一行。
+  // history 是读账本本身，记进去等于自指。这两个都不进 ops。
+  'reset', 'history',
+]);
 const TARGET_INVALID = 'BROWSER_TARGET_INVALID';
 const ATTACH_FAILED = 'BROWSER_CDP_ATTACH_FAILED';
 
@@ -123,12 +137,57 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
 
     /**
+     * P3 观测：通用追踪包装。面板/CLI 的时间线要覆盖全部 33 个 wire 工具，而只有一部分方法自带
+     * `#record`；与其逐个包一层（以后新增方法还得记得补），这里用 Proxy 统一记账：
+     *   - 跳过 TRACED_SKIP（已记账的入口 + 生命周期方法），避免重复；
+     *   - 第一个实参解析成会话 id，取不到会话就原样转发不记账（如 open(label)）；
+     *   - 与 `#record` 同语义：写 session.history（browser_history 能看到）并落 ops.jsonl。
+     * 观测只锦上添花：appendOp 自己吞写失败，这里只负责把调用方的异常继续抛出去。
+     */
+    traced() {
+      const self = this;
+      return new Proxy(this, {
+        get(target, prop, receiver) {
+          const value = Reflect.get(target, prop, receiver);
+          if (typeof prop !== 'string' || typeof value !== 'function') return value;
+          // 经 Proxy 取到的方法必须把 this 绑回真实实例：私有字段（#sessions/#observe…）只认
+          // 实例本身，绑成 Proxy 会报 `Receiver must be an instance of class CdpProvider`。
+          if (TRACED_SKIP.has(prop)) return value.bind(target);
+          return (...args) => {
+            const session = self.#sessions.get(String(args[0]));
+            if (!session) return value.apply(self, args);
+            return self.#traced(prop, session, args[1] ?? {}, () => value.apply(self, args));
+          };
+        },
+      });
+    }
+
+    async #traced(action, session, params, run) {
+      const seq = ++session.seq;
+      const at = Date.now();
+      try {
+        const result = await run();
+        const entry = { seq, action, params, ok: true, at, ms: Date.now() - at };
+        const summary = this.#summarize(result);
+        if (summary !== undefined) entry.result = summary;
+        session.history.push(entry);
+        this.#observe(session, entry);
+        return result;
+      } catch (error) {
+        const entry = { seq, action, params, ok: false, error: describe(error), at, ms: Date.now() - at };
+        session.history.push(entry);
+        this.#observe(session, entry);
+        throw error;
+      }
+    }
+
+    /**
      * 公开端口要求 `Authorization: Bearer <token>`（每次守护进程启动随机生成，落在 0600 的状态文件里）。
      * 显式配置 cdpToken 优先；否则每次都重新读状态文件，因为守护进程重启后 token 会变。
      */
     #cdpToken() {
       if (typeof config.cdpToken === 'string' && config.cdpToken) return config.cdpToken;
-      const root = process.env.DSH_BROWSER_SVC_ROOT || join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'browser-service');
+      const root = defaultRoot();
       try {
         const state = JSON.parse(readFileSync(join(root, 'service.json'), 'utf8'));
         if (typeof state?.token === 'string' && state.token) return state.token;
@@ -261,10 +320,101 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
       return page;
     }
 
+    /** 新增标签页的唯一入口：所有建页点都过这里，观测监听器也只在这里挂一次（P3）。 */
     #addTab(session, page) {
       const tabId = `t${(session.tabSeq += 1)}`;
       session.tabs.set(tabId, page);
+      this.#instrument(page, session.id, tabId);
       return tabId;
+    }
+
+    /** P3：console / 网络捕获开关（缺省开，只有显式配 false 才关）。 */
+    #captureConsole() {
+      return config.captureConsole !== false;
+    }
+
+    #captureNetwork() {
+      return config.captureNetwork !== false;
+    }
+
+    /**
+     * P3：给每个新标签挂观测监听器 —— console/pageerror 写 console.jsonl，request/response/requestfailed
+     * 写 network.jsonl（同一条请求的耗时用 Map 记起点）。只记元数据（类型/URL/状态码/耗时），
+     * 不落请求体与请求头。挂监听器失败绝不能影响页面本身，所以整体包在 try 里。
+     */
+    #instrument(page, sessionId, tabId) {
+      const where = { session: sessionId, tab: tabId };
+      const on = (event, handler) => {
+        try {
+          page.on(event, handler);
+        } catch {
+          /* 页面已关或事件不支持：忽略，观测不该影响调用 */
+        }
+      };
+      const url = () => {
+        try {
+          return page.url();
+        } catch {
+          return '';
+        }
+      };
+      const started = new Map();
+      if (this.#captureConsole()) {
+        on('console', (message) => {
+          appendConsole({ at: Date.now(), ...where, type: message.type(), text: clip(message.text?.() ?? '', 500), url: clip(url(), 300) });
+        });
+        on('pageerror', (error) => {
+          appendConsole({ at: Date.now(), ...where, type: 'pageerror', text: clip(String(error?.message ?? error), 500), url: clip(url(), 300) });
+        });
+      }
+      if (this.#captureNetwork()) {
+        on('request', (request) => {
+          const at = Date.now();
+          started.set(request, at);
+          appendNetwork({ at, ...where, phase: 'request', method: request.method(), url: clip(request.url(), 500), resource: request.resourceType() });
+        });
+        on('response', (response) => {
+          const request = response.request();
+          const at = Date.now();
+          const from = started.get(request);
+          started.delete(request);
+          appendNetwork({
+            at, ...where, phase: 'response', method: request.method(), url: clip(request.url(), 500),
+            status: response.status(), ok: response.ok(), ...(from === undefined ? {} : { ms: at - from }),
+          });
+        });
+        on('requestfailed', (request) => {
+          const at = Date.now();
+          const from = started.get(request);
+          started.delete(request);
+          appendNetwork({
+            at, ...where, phase: 'failed', method: request.method(), url: clip(request.url(), 500),
+            error: clip(request.failure()?.errorText ?? '请求失败', 200), ...(from === undefined ? {} : { ms: at - from }),
+          });
+        });
+      }
+    }
+
+    /**
+     * P3：本会话 HAR 的落盘路径（<root>/har/<ts>-<id>.har），顺手删掉超过 HAR_KEEP 份的旧文件。
+     * 目录建不出来就返回 null —— open() 此时不传 recordHar，退化成只有 JSONL 观测。
+     */
+    #harPath(id) {
+      try {
+        const dir = join(defaultRoot(), 'har');
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        const stale = readdirSync(dir).filter((name) => name.endsWith('.har')).sort();
+        for (const name of stale.slice(0, Math.max(0, stale.length - HAR_KEEP + 1))) {
+          try {
+            rmSync(join(dir, name), { force: true });
+          } catch {
+            /* 删不掉就留着，不影响本次导出 */
+          }
+        }
+        return join(dir, `${Date.now()}-${id}.har`);
+      } catch {
+        return null;
+      }
     }
 
     #assertUrl(raw) {
@@ -363,25 +513,47 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
       return page.getByText(value).nth(index);
     }
 
-    /** 统一包装：记录 history + 错误码归一。 */
+    /** 统一包装：记录 history + 错误码归一 + 观测落盘（P3）。 */
     async #record(session, action, params, run) {
       const seq = ++session.seq;
       const at = Date.now();
       try {
         const result = await run();
         const failedScript = result !== null && typeof result === 'object' && result.ok === false && typeof result.exception === 'string';
-        const entry = { seq, action, params: params ?? {}, ok: !failedScript, at };
+        const entry = { seq, action, params: params ?? {}, ok: !failedScript, at, ms: Date.now() - at };
         if (failedScript) entry.error = result.exception;
         else {
           const summary = this.#summarize(result);
           if (summary !== undefined) entry.result = summary;
         }
         session.history.push(entry);
+        this.#observe(session, entry);
         return result;
       } catch (error) {
-        session.history.push({ seq, action, params: params ?? {}, ok: false, error: describe(error), at });
+        const entry = { seq, action, params: params ?? {}, ok: false, error: describe(error), at, ms: Date.now() - at };
+        session.history.push(entry);
+        this.#observe(session, entry);
         throw error;
       }
+    }
+
+    /**
+     * 观测落盘（P3）：会话 / 当前标签 / 耗时 / 成败 / 截断后的参数与结果，追加到 <root>/ops.jsonl。
+     * 任何写失败都被 appendOp 吞掉 —— 观测只能锦上添花，不能影响浏览器调用。
+     */
+    #observe(session, entry) {
+      appendOp({
+        at: entry.at,
+        seq: entry.seq,
+        session: session.id,
+        tab: session.active,
+        action: entry.action,
+        ms: entry.ms,
+        ok: entry.ok,
+        params: clipJson(entry.params ?? {}),
+        ...(entry.error === undefined ? {} : { error: clip(entry.error) }),
+        ...(entry.result === undefined ? {} : { result: clip(entry.result) }),
+      });
     }
 
     #summarize(value) {
@@ -413,9 +585,13 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
 
     async open(label) {
       const browser = await this.#browser();
+      const id = `s${(this.#sessionSeq += 1)}`;
+      // P3：会话级 HAR（playwright 在 context 关闭时写盘，供 `browsersvc har` 取用）；关掉网络捕获就不录。
+      const harPath = this.#captureNetwork() ? this.#harPath(id) : null;
+      const har = harPath ? { recordHar: { path: harPath, content: 'omit' } } : {};
       let context;
       try {
-        context = await browser.newContext({ viewport: { width: config.viewportWidth, height: config.viewportHeight } });
+        context = await browser.newContext({ viewport: { width: config.viewportWidth, height: config.viewportHeight }, ...har });
       } catch (error) {
         throw fail(`browser: 无法创建隔离上下文：${describe(error)}`, ATTACH_FAILED, error);
       }
@@ -427,7 +603,6 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
         await context.close().catch(() => {});
         throw fail(`browser: 无法在隔离上下文里新建标签页：${describe(error)}`, ATTACH_FAILED, error);
       }
-      const id = `s${(this.#sessionSeq += 1)}`;
       const session = { id, label: label ?? id, conn: browser, reviving: null, context, tabs: new Map(), active: '', tabSeq: 0, history: [], seq: 0, closed: false };
       session.active = this.#addTab(session, page);
       this.#sessions.set(id, session);
@@ -1093,5 +1268,5 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     }
   }
 
-  return new CdpProvider();
+  return new CdpProvider().traced();
 }

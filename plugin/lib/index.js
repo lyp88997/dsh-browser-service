@@ -7,6 +7,7 @@
 import { exec } from 'node:child_process';
 import Schema from '@deepseek-ai/schemastery';
 import { createProvider } from './provider.js';
+import { PANEL_PATH, registerPanel } from './panel.js';
 import { SEAM_PACKAGE, TESTED_HOSTS, inspectSeam, readVersions, seamMismatchMessage } from './compat.js';
 
 export const name = 'browser-cdp';
@@ -36,6 +37,16 @@ export const Config = Schema.object({
    * 进程（实测约 +93 MB），超过上限时 `browser_open {newTab:true}` 报 `BROWSER_TAB_LIMIT`。
    */
   maxTabs: Schema.number().default(5),
+  /**
+   * P3 观测：把每个标签页的 console / pageerror 追加到 `<root>/console.jsonl`（`browsersvc console` 读回）。
+   * 默认开；设 false 就完全不挂监听器。
+   */
+  captureConsole: Schema.boolean().default(true),
+  /**
+   * P3 观测：把请求/响应元数据追加到 `<root>/network.jsonl`（`browsersvc network` 读回），并给每个会话
+   * 录一份 HAR 到 `<root>/har/`（`browsersvc har` 导出）。只记 URL/状态码/耗时，不落请求体。默认开。
+   */
+  captureNetwork: Schema.boolean().default(true),
   /** 会话视口尺寸（坐标点击的空间）。 */
   viewportWidth: Schema.number().default(1440),
   viewportHeight: Schema.number().default(900),
@@ -126,4 +137,18 @@ export async function apply(ctx, config) {
   ctx.logger?.info?.(
     `browser-cdp: 已注册 provider "${provider.id}"（${config.cdpUrl}；宿主 DSH ${versions.host ?? '未知'}，接缝 ${versions.seam ?? '未知'}）`,
   );
+
+  // 网页面板的宿主半边：一条只读 JSON 路由，数据直接来自观测日志文件；浏览器工具坏了它也不受影响。
+  // 用 ctx.inject(['webServer']) 而不是把它写进 inject —— 无头 profile（没有 Web GUI）里本插件
+  // 只做 provider，不会因为缺 webServer 而卡住不启动。面板是可选件，ctx 上没有 inject 时跳过即可，
+  // 绝不能让它把 provider 一起带坏（旧宿主/自定义 harness 的 ctx 可能没有 inject）。
+  if (typeof ctx.inject !== 'function') {
+    ctx.logger?.info?.('browser-cdp: 宿主 ctx 没有 inject，跳过网页面板路由（provider 不受影响）');
+    return;
+  }
+  ctx.inject(['webServer'], (webCtx) => {
+    const dispose = registerPanel(webCtx);
+    webCtx.effect(() => () => dispose(), 'browser-cdp: read-only panel route');
+    webCtx.logger?.info?.(`browser-cdp: 面板数据路由已挂到 ${PANEL_PATH}`);
+  });
 }

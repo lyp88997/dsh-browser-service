@@ -113,15 +113,17 @@ function runCase(bin, index) {
     const probeErr = (probe.stderr ?? '').split('\n').map((l) => l.trim())
       .find((l) => /^([A-Za-z]*Error)\b/.test(l)) ?? '';
     ok('本包入口可在该宿主下加载并注册 provider',
-      probed.registered?.includes('cdp-daemon') === true,
-      probeErr || (probe.stdout ?? '').slice(0, 200) || (probe.stderr ?? '').slice(0, 200));
+      probed.registered?.includes('cdp-daemon') === true && probed.bareOk === true,
+      probeErr || probed.bareError || (probe.stdout ?? '').slice(0, 200) || (probe.stderr ?? '').slice(0, 200));
     ok('启动期探测无 error 日志',
       Array.isArray(probed.logs?.error) && probed.logs.error.length === 0, JSON.stringify(probed.logs?.error ?? []));
     ok('探测到的宿主版本与本行一致',
       probed.versions?.host === version, `probe=${probed.versions?.host} row=${version}`);
     if (SMOKE) {
+      // 断言只压在「导航到 example.com 且真的读到正文」：正文措辞是上游的外部事实（2026-09 已改），
+      // 绑具体字符串会让矩阵因为别人改文案而红。
       ok('真开一个页面并读回正文',
-        page.hasHeading === true, JSON.stringify(page));
+        page.url === 'https://example.com/' && Number(page.contentLength) > 40, JSON.stringify(page));
     }
   } finally {
     if (SMOKE && existsSync(join(smokeRoot, 'service.json'))) {

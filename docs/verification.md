@@ -1,11 +1,12 @@
 # 验收与测试
 
-三条脚本**零依赖**（只用 Node 内置的 `fetch` / `WebSocket` / `http` 与真实 `browsersvc` + 本地站点；`verify-matrix.mjs` 的 `--smoke` 需要能解析外网的 `example.com`）：
+四条脚本**零依赖**（只用 Node 内置的 `fetch` / `WebSocket` / `http` 与真实 `browsersvc` + 本地站点；`verify-matrix.mjs` 的 `--smoke` 需要能解析外网的 `example.com`）：
 
 ```bash
 node scripts/verify-daemon.mjs      # M1 守护进程 + CLI 防御：35/35
 node scripts/verify-provider.mjs    # M2 provider：110 通过，0 失败
-node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）：33/33
+node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）：40/40
+node scripts/verify-data.mjs        # P3 观测面 + 面板路由：45 通过，0 失败
 node scripts/verify-matrix.mjs --dsh <bin> --dsh <bin> --smoke   # DSH 版本矩阵：4 个宿主版本 × 12 项
 ```
 
@@ -13,7 +14,9 @@ node scripts/verify-matrix.mjs --dsh <bin> --dsh <bin> --smoke   # DSH 版本矩
 
 ## 各套覆盖什么
 
-**`verify-bundle.mjs`（33 项）** —— 在一次性隔离 `DSH_HOME`（`/tmp`）里真实执行官方安装/移除命令：交付物里只有一个包 → `add <tgz>` 追加依赖与层 → `--dump-config` 里本包层挂出 `browser`（`browserProvider: cdp-daemon`）、`tool-browser` 与 `browser-cdp`，且**三行都没有 not found** → 默认自启命令指向装进来的 `bin/browsersvc.mjs` → `./browser` / `./tool-browser` 转出口的导出键与 `dsh-builtin-browser` 源模块**完全一致** → 补出宿主 peer 目录（`scripts/lib/host-peers.mjs`，隔离 home 不会自动生成）后，包入口可 `import`、启动期探测（`plugin/lib/compat.js`）对真实接缝给出 0 error、四种坏形状各报对人、错误文案命中宿主与接缝版本，并静态数出接缝工具面 33 个且含 `browser_a11y` → `remove` 同时清掉依赖与层。不碰默认 profile。
+**`verify-bundle.mjs`（40 项）** —— 在一次性隔离 `DSH_HOME`（`/tmp`）里真实执行官方安装/移除命令：交付物里只有一个包 → `add <tgz>` 追加依赖与层 → `--dump-config` 里本包层挂出 `browser`（`browserProvider: cdp-daemon`）、`tool-browser` 与 `browser-cdp`，且**三行都没有 not found** → 默认自启命令指向装进来的 `bin/browsersvc.mjs` → `./browser` / `./tool-browser` 转出口的导出键与 `dsh-builtin-browser` 源模块**完全一致** → 补出宿主 peer 目录（`scripts/lib/host-peers.mjs`，隔离 home 不会自动生成）后，包入口可 `import`、启动期探测（`plugin/lib/compat.js`）对真实接缝给出 0 error、四种坏形状各报对人、错误文案命中宿主与接缝版本，并静态数出接缝工具面 33 个且含 `browser_a11y` → **P3 客户端半边（5c，7 项）**：tarball 带 `plugin/client.js`、`exports["./client"]` 与 `dsh.client.platform==='web'`、入口走 `window.__ModuleLoader__.load` 且 `id` = 包名、factory 返回标准 cordis 插件（`apply` + `inject: ['slots']`）、`apply` 把看板注册到 `shell.overlay`、组件可渲染、裸 `require` 全在 9 个平台种子里（`scripts/lib/client-probe.mjs` 只读探针） → `remove` 同时清掉依赖与层。不碰默认 profile。
+
+**`verify-data.mjs`（45 项）** —— 自己起本地站点 + 真实 `browsersvc run`（临时 root/端口）与真 provider，覆盖 P3 的五个观测面与面板路由：操作日志（`navigate`/`execute` 入账、`ms`/`ok`/会话/标签齐、**通用追踪覆盖 `snapshot`/`content`/`screenshot`/`listTabs`**、失败记 `ok:false` 与错误原因、`open` 不入账、人话表格有汇总行、`--lines` 生效）；控制台（`log`/`error` 两类）；网络（`request`/`response` 两阶段、状态码与耗时、抓到 `/api`、**不记头与体**）；HAR（关闭会话后落盘、报路径与字节、HAR JSON 含本次请求、`--out` 复制、拒绝覆盖、`--session` 挑文件）；cookie/localStorage（导出字段与 0600 权限、`--url` 命中/不命中、注入、新会话隔离）；面板（`panel.json` 三份数据、`?lines=1`、条目是真操作、载荷不含绝对路径、`POST` → 405、卸载后路由消失）；容错（落盘 IO 失败不抛）。
 
 **`verify-matrix.mjs`（4 个宿主版本 × 12 项）** —— 把**同一个 tarball** 分别装进 `--dsh <bin>` 指定的多个 DSH（本机全局 + `npm install --prefix` 装的备版本），每行验 12 项：`add` 退出码 0、依赖指向该 tarball、`dsh.profile.bundles` 追加本包、`--dump-config` 退出码 0、本包层存在且 `browser` 行选中 `cdp-daemon`、`tool-browser` 行存在、没有预期外的 `not found`（只允许 `browser-electron` / `playwright-browser`）、补出宿主 peer、入口可加载并注册出 `cdp-daemon`、启动期探测无 error、探测到的宿主版本与该行一致、`--smoke` 时真开 `example.com` 读回正文。**逐版本串行**（每行一个无头内核，约 600 MB）。
 

@@ -18,8 +18,12 @@ browser_* 工具（dsh-builtin-browser/tool-browser，经本包 plugin/shims/too
 - `plugin/lib/compat.js`：导出 `SEAM_PACKAGE` / `TESTED_SEAM` / `TESTED_HOSTS` 与纯函数 `inspectSeam({browserModule, toolModule, hostVersion})`、`readVersions()`、`seamMismatchMessage()`；只做形状与版本判断，不做任何 I/O。
 - `plugin/lib/provider.js`：`createProvider({chromium, BrowserError, config, log, autoStart})`，实现 seam 的 `BrowserProvider` 全部成员（`open`/`execute`/`snapshot`/`screenshot`/…；契约见 `dsh-builtin-browser/lib/browser/types.d.ts`）；`defaultAutoStartCommand()` 指向**本包自带**的 `bin/browsersvc.mjs`。
 - `plugin/lib/dom.js`：注入页面的纯函数（snapshot/a11y/content/scrape/fillForm/challenge 检测）。**注入函数不能引用任何外部作用域**（序列化后不存在）。
+- `plugin/lib/provider.js` 里的**通用追踪**（P3）：`traced()` 返回一个 `Proxy`，把每个公共方法都包一层「跑完记账」（`seq`/`action`/`params`/`ok`/`error`/`ms`）写进 `<root>/ops.jsonl`，以后新增方法自动覆盖。`open`（会话创建）、`reset`（会清空账本）、`history`（读账本本身）与本来就有 `#record` 的方法在 `TRACED_SKIP` 里，不重复记账。`#instrument(page)` 挂在 `#addTab`（页面创建的**唯一漏斗**）上抓控制台与网络。
+- `plugin/lib/panel.js`（P3）：网页面板的**宿主半边**——只读路由 `GET /browser-service/panel.json`（`exact`、只 GET/HEAD、`no-store`、载荷不含本机绝对路径），数据直接读三个 JSONL；通过 `ctx.inject(['webServer'], …)` 挂载，没有 `webServer` 的宿主不挂，插件照常工作。
+- `plugin/client.js`（P3）：面板的**客户端半边**——手写、零构建，走 DSH 的 `window.__ModuleLoader__.load({ id, factory })` 协议，只 `require('react')`，`apply` 里 `ctx.slots.inject('shell.overlay', …)` 注册一个右下角浮动胶囊/卡片（2.5 s 轮询同一个路由）。
+- `src/opslog.mjs`（P3）：插件与 CLI 共用的观测落盘层——`ops.jsonl`/`console.jsonl`/`network.jsonl` 环形（1/1/2 MiB，超限保尾部一半），`appendEntry` 的任何 IO 异常都吞掉并返回 `false`（**观测不能把浏览器调用搞挂**），文件 0600。
 
-配置项（`Config`，全部有默认值）：`providerId='cdp-daemon'`、`cdpUrl='http://127.0.0.1:9333'`、`connectTimeoutMs`、`actionTimeoutMs`、`navigationTimeoutMs`、`lookupTimeoutMs`、`snapshotMaxElements`、`contentMaxChars`、`viewportWidth/Height`、可选 `autoStartCommand`（默认用包内 bin）、`autoStartTimeoutMs`、可选 `cdpToken`（默认自动读 `service.json`）、可选 `downloadDir`（未配置时由 `defaultDownloadDir()` 取系统 Downloads 目录：`XDG_DOWNLOAD_DIR` → 家目录下存在的 `Downloads`/`下载`/`下載` → `~/Downloads`）。完整表见根 README 的「配置」一节（权威定义是 `plugin/lib/index.js` 的 `Config`）。
+配置项（`Config`，全部有默认值）：`providerId='cdp-daemon'`、`cdpUrl='http://127.0.0.1:9333'`、`connectTimeoutMs`、`actionTimeoutMs`、`navigationTimeoutMs`、`lookupTimeoutMs`、`snapshotMaxElements`、`contentMaxChars`、`captureConsole`/`captureNetwork`（是否录控制台与网络，默认都开）、`maxTabs`（默认 5，夹 1..50）、`viewportWidth/Height`、`idleMs`（自启的空闲回收窗口，默认 300000）、可选 `autoStartCommand`（默认用包内 bin）、`autoStartTimeoutMs`、可选 `cdpToken`（默认自动读 `service.json`）、可选 `downloadDir`（未配置时由 `defaultDownloadDir()` 取系统 Downloads 目录：`XDG_DOWNLOAD_DIR` → 家目录下存在的 `Downloads`/`下载`/`下載` → `~/Downloads`）。完整表见根 README 的「配置」一节（权威定义是 `plugin/lib/index.js` 的 `Config`）。
 
 ## 2. 部署（一条命令）
 
@@ -49,7 +53,7 @@ node scripts/verify-provider.mjs      # 结果：110 通过，0 失败
 
 自己起本地 http 站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖：`available`、session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back/forward/reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`、保存路径准入（F1）与默认保存目录（D1）、掉线后会话复活（F22）、默认自启命令。
 
-守护进程/CLI 层：`node scripts/verify-daemon.mjs`（35 项）；组合包安装路径：`node scripts/verify-bundle.mjs`（33 项）；DSH 版本矩阵：`node scripts/verify-matrix.mjs --dsh <bin> … --smoke`（4 个宿主版本 × 12 项）。
+守护进程/CLI 层：`node scripts/verify-daemon.mjs`（35 项）；组合包安装路径：`node scripts/verify-bundle.mjs`（40 项）；观测面与面板：`node scripts/verify-data.mjs`（45 项）；DSH 版本矩阵：`node scripts/verify-matrix.mjs --dsh <bin> … --smoke`（4 个宿主版本 × 12 项）。
 
 ### 3.2 DSH 内端到端（seam → provider → 守护进程 → CDP）
 

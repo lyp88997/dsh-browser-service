@@ -1,9 +1,27 @@
 # 更新记录
 
-本文件记录每个版本的变更与**真实缺陷编号**（F = 代码审查/上线验证发现的缺陷，P = 资源/性能专项（0.5.0），B = 按官方打包文档核对发现的问题，U = v0.4.0 合并交付物的改动，P1 见 v0.5.0，F26 见 v0.4.0）。
+本文件记录每个版本的变更与**真实缺陷编号**（F = 代码审查/上线验证发现的缺陷，P = 专项（P1 资源/性能 0.5.0、P2 DSH 版本适配 0.5.1、P3 可观测性与交互 0.6.0），B = 按官方打包文档核对发现的问题，U = v0.4.0 合并交付物的改动，P1 见 v0.5.0，F26 见 v0.4.0）。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-验收计数随版本推进：`verify-daemon` 13 → 26 → 31 → 32 → **35**，`verify-provider` 67 → 77 → 83 → 86 → 88 → 95 → **110**，`verify-bundle` 16 → 23 → **33**，`verify-matrix` 首次引入（4 个宿主版本 × 12 项）。
+验收计数随版本推进：`verify-daemon` 13 → 26 → 31 → 32 → **35**，`verify-provider` 67 → 77 → 83 → 86 → 88 → 95 → **110**，`verify-bundle` 16 → 23 → 33 → **40**，`verify-data` 首次引入（**45**），`verify-matrix` 首次引入（4 个宿主版本 × 12 项）。
+
+## [0.6.0] — 2026-09-28
+
+起因：方案文档 P3 第一批「可观测性 + console/网络抓取 + cookie 导出」。约束是**工具面不是我们的**——33 个 `browser_*` 来自内置接缝包 `dsh-builtin-browser/tool-browser`，我们只在 patch 里覆盖它的行，所以用户面全部走 **CLI + 状态文件**（网页面板只是同一份数据的只读窗口），**零新增工具**。
+
+| # | 项 | 影响 | 处理 |
+| --- | --- | --- | --- |
+| P3-1 | 出了事只能看 `logs`/`status`，看不到「刚才那次调用做了什么、花了多久、为什么失败」 | 浏览器自动化出问题只能靠复现猜 | 新增 `src/opslog.mjs`（JSONL 环形落盘，插件与 CLI 共用）与 `browsersvc ops`；provider 用**通用追踪器**（`traced()` 返回 `Proxy`，对所有公共方法统一记账：`seq`/`action`/`params`/`ok`/`error`/`ms`）自动覆盖全部方法，以后新增方法也不会漏。`open`（会话创建）、`reset`（会清空账本）、`history`（读账本本身）刻意不记 |
+| P3-2 | 页面控制台与网络流量完全不可见 | 前端报错、接口 4xx/5xx、资源加载失败都看不到 | `#instrument(page)` 挂在 `#addTab`（所有页面创建的**唯一漏斗**）：`console`/`pageerror` → `<root>/console.jsonl`（文本截 500 字）；`request`/`response`/`requestfailed` → `<root>/network.jsonl`（同请求记耗时，**不记头与体**）。开关 `captureConsole`/`captureNetwork`（默认都开） |
+| P3-3 | 想要 HAR 得自己造 | 交给外部工具分析网络时缺数据 | 直接用 playwright-core 的 `recordHar`（`BrowserContextOptions`）按会话录，落在 `<root>/har/<时间戳>-<会话>.har`，只留最近 10 份；`browsersvc har [--session=s1] [--out=file]` |
+| P3-4 | cookie/localStorage 跨会话搬不动 | 登录态无法导出复用或注入调试 | `browsersvc cookies`（导出 0600、拒绝覆盖；注入需有活会话）。实现走**浏览器级 CDP 会话**（`newBrowserCDPSession` + `Target.getBrowserContexts` 的非默认 id + `Storage.getCookies/setCookies`）——实测 `context.cookies()/addCookies()` 写的是**默认上下文**，读不到也写不进我们的隔离上下文；localStorage 走可见页面 `evaluate` |
+| P3-5 | 没有任何界面，工具调用过程只能翻日志 | 边跑边看要开终端 | 只读网页面板：宿主半边 `plugin/lib/panel.js` 挂 `GET /browser-service/panel.json`（`exact`、只 GET/HEAD、`no-store`、载荷不含本机绝对路径、没有 `webServer` 的宿主不挂），客户端半边 `plugin/client.js` 手写零构建（`window.__ModuleLoader__` 协议、只 `require('react')`、注册到 `shell.overlay`）。**不注册任何 `tool.call.toolview` 行**，不动出厂通用 tool row |
+| P3-6 | 观测日志出事会把浏览器调用拖下水 | 磁盘满/权限异常不该让 `browser_*` 失败 | 所有落盘集中在 `src/opslog.mjs`：IO 异常一律吞掉并返回 `false`；环形上限（ops/console 各 1 MiB、network 2 MiB）超限保尾部一半；文件 0600（含 URL 与 cookie） |
+
+- 验收：新增 **`scripts/verify-data.mjs`（45 通过 / 0 失败）**——五个观测面 + 面板路由：操作日志（含通用追踪覆盖 `snapshot`/`content`/`screenshot`/`listTabs`、失败记 `ok:false` 与原因、`open` 不入账、人话表格与 `--lines`）、控制台、网络（request/response 两阶段、状态码与耗时、不记头体）、HAR（关闭会话后落盘、`--out` 复制、拒绝覆盖、`--session` 挑文件）、cookie/localStorage（导出字段与权限、`--url` 过滤、导入、新会话隔离）、面板（三份数据、`?lines=1`、405、卸载后路由消失）、容错（IO 失败不抛）。
+- `scripts/verify-bundle.mjs` 33 → **40**（新增 5c 段 7 项）：tarball 带 `plugin/client.js`、`exports["./client"]` 与 `dsh.client.platform==='web'`、客户端入口走 `__ModuleLoader__` 且 id = 包名、factory 返回标准 cordis 插件（`apply` + `inject: slots`）、`apply` 注册到 `shell.overlay`、组件可渲染（无数据回落胶囊）、客户端只 `require` 平台种子表内的包。
+- 连带修复：`verify-provider.mjs` 的 `reset 清空标签与历史` 断言改成先读历史再列标签——通用追踪会把 `listTabs` 也记一行，顺序反了会把那一行算进「reset 之后的历史」（断言强度不变）。
+- 面板要在 DSH 里**重启一次**才会出现（客户端插件在启动时收集）；改 `plugin/client.js` 不必重启（客户端入口支持热替换），改宿主半边要重启。
 
 ## [0.5.1] — 2026-09-28
 

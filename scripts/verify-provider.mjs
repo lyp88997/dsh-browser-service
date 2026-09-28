@@ -391,8 +391,10 @@ try {
   const restoredCookie = await provider.execute(other, { script: 'document.cookie' });
   check('restoreAuth 注入成功', restored >= 1 && String(restoredCookie.value).includes('iso=ctxA'), `count=${restored} cookie=${restoredCookie.value}`);
   await provider.reset(session);
-  tabs = await provider.listTabs(session);
+  // 先读历史再列标签：P3 的通用追踪会把 listTabs 也记进 ops（reset/history 不记），
+  // 顺序反了会把那一行算进「reset 之后的历史」。
   const resetHistory = await provider.history(session);
+  tabs = await provider.listTabs(session);
   check('reset 清空标签与历史', tabs.length === 1 && resetHistory.length === 0, `tabs=${tabs.length} history=${resetHistory.length}`);
   await provider.close(other);
   await expectCode('close 后 session 失效', 'BROWSER_SESSION_UNKNOWN', () => provider.snapshot(other));
