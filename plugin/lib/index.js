@@ -7,6 +7,7 @@
 import { exec } from 'node:child_process';
 import Schema from '@deepseek-ai/schemastery';
 import { createProvider } from './provider.js';
+import { SEAM_PACKAGE, TESTED_HOSTS, inspectSeam, readVersions, seamMismatchMessage } from './compat.js';
 
 export const name = 'browser-cdp';
 
@@ -74,6 +75,35 @@ function runCommand(command, timeoutMs) {
 }
 
 export async function apply(ctx, config) {
+  // 启动期能力探测：先把「接缝还在不在、形状对不对」说清楚，再谈 provider。
+  const versions = readVersions();
+  let seamBrowser;
+  let seamTools;
+  try {
+    seamBrowser = await import(`${SEAM_PACKAGE}/browser`);
+    seamTools = await import(`${SEAM_PACKAGE}/tool-browser`);
+  } catch (error) {
+    ctx.logger?.error?.(
+      `browser-cdp: 插件未启用 —— 加载浏览器接缝 ${SEAM_PACKAGE} 失败（装的是 ${versions.seam ?? '未知'}，宿主 DSH ${versions.host ?? '未知'}）：`
+      + `${error instanceof Error ? error.message : String(error)}。`
+      + ' 本包依赖该接缝提供 ctx.browser 与 33 个 browser_* 工具；接缝缺失通常意味着依赖没装齐（profile 里 dsh-browser-service 与 dsh-builtin-browser 应同时存在）或上游改了包名。',
+    );
+    return;
+  }
+  const verdict = inspectSeam({ browserModule: seamBrowser, toolModule: seamTools, hostVersion: versions.host });
+  if (!verdict.ok) {
+    ctx.logger?.error?.(seamMismatchMessage(verdict, versions));
+    return;
+  }
+  for (const warning of verdict.warnings) ctx.logger?.warn?.(`browser-cdp: ${warning}`);
+  if (typeof ctx.browser?.registerBrowserProvider !== 'function') {
+    ctx.logger?.error?.(
+      `browser-cdp: 插件未启用 —— 宿主没有提供 ctx.browser.registerBrowserProvider（宿主 DSH ${versions.host ?? '未知'}）。`
+      + ` 本包实测过的宿主：${TESTED_HOSTS.join(' / ')}。`,
+    );
+    return;
+  }
+
   let chromium;
   try {
     ({ chromium } = await import('playwright-core'));
@@ -81,16 +111,9 @@ export async function apply(ctx, config) {
     ctx.logger?.error?.(`browser-cdp: 无法加载 playwright-core，未注册 provider：${error instanceof Error ? error.message : String(error)}`);
     return;
   }
-  let BrowserError;
-  try {
-    // 与 seam 共用错误类型（同目录安装时必然可解析）；独立测试时退化为内置实现。
-    ({ BrowserError } = await import('dsh-builtin-browser/browser'));
-  } catch {
-    BrowserError = undefined;
-  }
   const provider = createProvider({
     chromium,
-    BrowserError,
+    BrowserError: seamBrowser.BrowserError,
     config,
     log: ctx.logger,
     autoStart: (command, timeoutMs) => runCommand(command, timeoutMs),
@@ -100,5 +123,7 @@ export async function apply(ctx, config) {
     unregister();
     void provider.dispose();
   }, 'browser-cdp: owned provider lifecycle');
-  ctx.logger?.info?.(`browser-cdp: 已注册 provider "${provider.id}"（${config.cdpUrl}）`);
+  ctx.logger?.info?.(
+    `browser-cdp: 已注册 provider "${provider.id}"（${config.cdpUrl}；宿主 DSH ${versions.host ?? '未知'}，接缝 ${versions.seam ?? '未知'}）`,
+  );
 }

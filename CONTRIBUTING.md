@@ -6,11 +6,14 @@
 
 ```bash
 node scripts/verify-daemon.mjs && node scripts/verify-provider.mjs && node scripts/verify-bundle.mjs
+# 动了兼容面（接缝形状/宿主版本/入口导出）时再加一遍矩阵（逐个宿主串行跑，每行一个无头内核）：
+# node scripts/verify-matrix.mjs --dsh dsh --smoke
 ```
 
-并在 PR 描述里贴上三个计数（当前基线：35/35、110 通过 0 失败、23/23）。
+并在 PR 描述里贴上计数（当前基线：35/35、110 通过 0 失败、33/33；矩阵 4 个宿主版本 × 12 项）。
 
-两条硬约束：
+三条硬约束：
 
 1. 不要为了「让用例通过」放宽安全约束（只绑回环、Bearer token、路径白名单、`--no-sandbox` + `--disable-dev-shm-usage`、`savePath` 准入）。
 2. 改 `plugin/lib/index.js` 的 `Config` 默认值必须同步根 README 的配置表；改 `dsh.bundle` / 转出口形状必须同步 `scripts/verify-bundle.mjs` 的断言。
+3. 改 `plugin/lib/compat.js` 的期望形状（接缝导出面）时，必须同步 README 的「DSH 兼容矩阵」并重跑矩阵——那是对外声明的兼容性依据。

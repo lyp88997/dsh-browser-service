@@ -13,8 +13,9 @@ browser_* 工具（dsh-builtin-browser/tool-browser，经本包 plugin/shims/too
 ## 1. 插件
 
 - 目录：`plugin/`（单一交付物 `dsh-browser-service` 的插件侧源码，见 `plugin/README.md`）——**不再是独立子包**，`plugin/package.json` 已删除，`dsh.bundle` 由根 `package.json` 声明。
-- 依赖（根 package.json）：`dsh-builtin-browser`（接缝 + 33 个工具）、`playwright-core`（**不下载浏览器**）、`@deepseek-ai/schemastery`。
-- `plugin/lib/index.js`：`name='browser-cdp'`、`inject=['browser']`；`apply` 动态 `import('playwright-core')`，失败则只记日志不注册；成功则 `ctx.browser.registerBrowserProvider(provider)`，并用 `ctx.effect` 持有 disposer（热加载不留 stale provider）。
+- 依赖（根 package.json）：`dsh-builtin-browser`（接缝 + 33 个工具）、`playwright-core`（**不下载浏览器**）；`@deepseek-ai/schemastery`（配置 schema）按官方 peer 规则写成 `peerDependencies` + `devDependencies`，与宿主共享同一实例。
+- `plugin/lib/index.js`：`name='browser-cdp'`、`inject=['browser']`；`apply` 先做**启动期能力探测**（`plugin/lib/compat.js`：动态 import 两个接缝模块 + `inspectSeam()` 校验导出面与宿主版本，不符就打印一句人话并 return；`ctx.browser.registerBrowserProvider` 不存在也报同一类错），探测通过后再动态 `import('playwright-core')`，然后 `ctx.browser.registerBrowserProvider(provider)`，并用 `ctx.effect` 持有 disposer（热加载不留 stale provider）。
+- `plugin/lib/compat.js`：导出 `SEAM_PACKAGE` / `TESTED_SEAM` / `TESTED_HOSTS` 与纯函数 `inspectSeam({browserModule, toolModule, hostVersion})`、`readVersions()`、`seamMismatchMessage()`；只做形状与版本判断，不做任何 I/O。
 - `plugin/lib/provider.js`：`createProvider({chromium, BrowserError, config, log, autoStart})`，实现 seam 的 `BrowserProvider` 全部成员（`open`/`execute`/`snapshot`/`screenshot`/…；契约见 `dsh-builtin-browser/lib/browser/types.d.ts`）；`defaultAutoStartCommand()` 指向**本包自带**的 `bin/browsersvc.mjs`。
 - `plugin/lib/dom.js`：注入页面的纯函数（snapshot/a11y/content/scrape/fillForm/challenge 检测）。**注入函数不能引用任何外部作用域**（序列化后不存在）。
 
@@ -48,7 +49,7 @@ node scripts/verify-provider.mjs      # 结果：110 通过，0 失败
 
 自己起本地 http 站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖：`available`、session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back/forward/reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`、保存路径准入（F1）与默认保存目录（D1）、掉线后会话复活（F22）、默认自启命令。
 
-守护进程/CLI 层：`node scripts/verify-daemon.mjs`（35 项）；组合包安装路径：`node scripts/verify-bundle.mjs`（23 项）。
+守护进程/CLI 层：`node scripts/verify-daemon.mjs`（35 项）；组合包安装路径：`node scripts/verify-bundle.mjs`（33 项）；DSH 版本矩阵：`node scripts/verify-matrix.mjs --dsh <bin> … --smoke`（4 个宿主版本 × 12 项）。
 
 ### 3.2 DSH 内端到端（seam → provider → 守护进程 → CDP）
 

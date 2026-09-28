@@ -1,6 +1,6 @@
 {
   "name": "dsh-browser-service",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "自建 DSH 浏览器服务：一个包 = 单例 CDP 守护进程 + 33 个 browser_* 工具面 + DSH ctx.browser provider（一个 dsh plugin add 装完即用）",
   "type": "module",
   "license": "MIT",
@@ -35,8 +35,13 @@
     "test": "node scripts/verify-daemon.mjs && node scripts/verify-provider.mjs"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.1",
     "dsh-builtin-browser": "^0.1.22",
     "playwright-core": "^1.49.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
   }
 }

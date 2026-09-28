@@ -17,10 +17,11 @@
  * 环境变量：DSH_BIN（默认 dsh）
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { linkHostPeers } from './lib/host-peers.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const DSH = process.env.DSH_BIN ?? 'dsh';
@@ -153,20 +154,9 @@ console.log('5. 转出口形状（shim ≡ dsh-builtin-browser 的模块）');
   // （240 个 @deepseek-ai/* 入口），profile 内任何包向上查找都靠它解析宿主提供的 peer
   // （cordis / dsh-tools / dsh-llm …）。这里按同一机制补一份软链，才能从隔离 profile
   // import dsh-builtin-browser/*。真实部署里 boot 过就有，无需手工补。
-  const dshAi = join(root, 'profiles', 'node_modules', '@deepseek-ai');
-  if (!existsSync(dshAi)) {
-    // 宿主 dsh 包根 = 真身 <pkgRoot>/lib/bin.js 往上两级；它的 node_modules/@deepseek-ai 就是 peer 来源。
-    try {
-      const which = spawnSync('sh', ['-c', `command -v ${DSH}`], { encoding: 'utf8' }).stdout.trim();
-      const pkgRoot = dirname(dirname(realpathSync(which))); // …/node_modules/@deepseek-ai/dsh
-      const hostAi = join(pkgRoot, 'node_modules', '@deepseek-ai');
-      if (!existsSync(hostAi)) throw new Error(`宿主 peer 目录不存在：${hostAi}`);
-      mkdirSync(dirname(dshAi), { recursive: true });
-      symlinkSync(hostAi, dshAi, 'dir');
-    } catch (error) {
-      check('能找到宿主 @deepseek-ai（补 profiles/node_modules 用）', false, error.message);
-    }
-  }
+  // 真实部署里 boot 过就有这份 peer 目录；隔离 home 没有，按同一机制补出来（scripts/lib/host-peers.mjs）。
+  const peers = linkHostPeers({ root, dshBin: DSH });
+  if (!peers.ok) check('能找到宿主 @deepseek-ai（补 profiles/node_modules 用）', false, peers.error);
   const script = `
     const keys = (m) => Object.keys(m).sort().join(',');
     const out = {};
@@ -189,6 +179,57 @@ console.log('5. 转出口形状（shim ≡ dsh-builtin-browser 的模块）');
     `shim=${shimBrowser} seam=${seamBrowser}`);
   check('tool-browser 转出口的导出键与源模块一致', shimTools !== '' && shimTools === seamTools,
     `shim=${shimTools} seam=${seamTools}`);
+}
+
+// 5b) 版本适配（P2）：启动期探测 + 宿主 peer 解析 + 工具面跟随
+console.log('5b. 版本适配（启动期探测 / 宿主 peer / 工具面）');
+{
+  const compatPath = join(installed, 'plugin', 'lib', 'compat.js');
+  const script = `
+    const out = {};
+    try { await import('dsh-browser-service'); out.pluginEntry = 'ok'; }
+    catch (e) { out.pluginEntry = 'ERR ' + e.code + ' ' + String(e.message).split('\\n')[0]; }
+    const compat = await import(${JSON.stringify(compatPath)});
+    out.versions = compat.readVersions();
+    const bm = await import('dsh-builtin-browser/browser');
+    const tm = await import('dsh-builtin-browser/tool-browser');
+    const v = (deps) => { const r = compat.inspectSeam(deps); return { ok: r.ok, fatal: r.fatal, warnings: r.warnings }; };
+    out.real = v({ browserModule: bm, toolModule: tm, hostVersion: out.versions.host });
+    out.noDefault = v({ browserModule: { BrowserError: class {} }, toolModule: tm, hostVersion: out.versions.host });
+    out.noApply = v({ browserModule: bm, toolModule: { name: 'tool-browser', inject: ['tools', 'browser'] }, hostVersion: out.versions.host });
+    out.missingInject = v({ browserModule: bm, toolModule: { name: 'tool-browser', apply() {}, inject: ['tools'] }, hostVersion: out.versions.host });
+    out.unknownHost = v({ browserModule: bm, toolModule: tm, hostVersion: '9.9.9-alpha.9' });
+    out.message = compat.seamMismatchMessage({ fatal: ['x'], warnings: [] }, { host: '1.2.3', seam: '4.5.6' });
+    console.log(JSON.stringify(out));`;
+  const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: profileDir, env, encoding: 'utf8', timeout: 60_000,
+  });
+  const line = (res.stdout ?? '').split('\n').find((l) => l.startsWith('{')) ?? '{}';
+  let p = {};
+  try { p = JSON.parse(line); } catch { /* 保持空 */ }
+  const fatalOf = (key) => (p[key]?.fatal ?? []).join('；');
+
+  check('本包入口在只声明 peer 时仍可 import（schemastery 解析到宿主）', p.pluginEntry === 'ok', p.pluginEntry ?? (res.stderr ?? '').trim().split('\n')[0]);
+  check('本包不携带自己的 @deepseek-ai/schemastery（peer 由宿主提供）',
+    !existsSync(join(installed, 'node_modules', '@deepseek-ai', 'schemastery')));
+  check('读得到宿主 DSH 与接缝版本', Boolean(p.versions?.host) && Boolean(p.versions?.seam), JSON.stringify(p.versions));
+  check('真实接缝通过启动期探测（0 fatal）', p.real?.ok === true && (p.real?.fatal ?? []).length === 0, fatalOf('real'));
+  check('接缝缺默认导出 → 探测判死并说清缺什么',
+    p.noDefault?.ok === false && /default/.test(fatalOf('noDefault')), fatalOf('noDefault'));
+  check('tool-browser 缺 apply → 探测判死', p.noApply?.ok === false && /apply/.test(fatalOf('noApply')), fatalOf('noApply'));
+  check('tool-browser 的 inject 缺 browser → 探测判死',
+    p.missingInject?.ok === false && /inject/.test(fatalOf('missingInject')), fatalOf('missingInject'));
+  check('未知宿主版本只告警、不阻断',
+    p.unknownHost?.ok === true && /9\.9\.9-alpha\.9/.test((p.unknownHost?.warnings ?? []).join('；')),
+    JSON.stringify(p.unknownHost));
+  check('探测失败的人话带包名与期望面',
+    /dsh-builtin-browser@0\.1\.22/.test(p.message ?? '') && /未启用/.test(p.message ?? ''), p.message);
+
+  const seamToolsSrc = readFileSync(join(profileDir, 'node_modules', 'dsh-builtin-browser', 'lib', 'tool-browser', 'index.js'), 'utf8');
+  const toolNames = new Set([...seamToolsSrc.matchAll(/'browser_[a-z0-9_]+'/g)].map((m) => m[0]));
+  check('接缝工具面仍是 33 个且含 browser_a11y（变了就同步 README 工具表与计数）',
+    toolNames.size === 33 && toolNames.has("'browser_a11y'"),
+    `count=${toolNames.size} a11y=${toolNames.has("'browser_a11y'")}`);
 }
 
 // 6) 官方移除命令：依赖与层同时移除

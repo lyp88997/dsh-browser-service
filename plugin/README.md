@@ -12,7 +12,8 @@ browser_* 工具（33 个，来自依赖 dsh-builtin-browser 的 tool-browser）
 
 | 路径 | 作用 |
 | --- | --- |
-| `lib/index.js` | 插件入口：`inject = ['browser']`，读 Config 后注册 provider |
+| `lib/index.js` | 插件入口：`inject = ['browser']`，先做启动期能力探测（`lib/compat.js`）再注册 provider |
+| `lib/compat.js` | 启动期探测：校验接缝导出面（`browser` 的函数默认导出 / `tool-browser` 的 `name`+`apply`+`inject`）、读宿主与接缝版本，不符时打一句人话并安静退出 |
 | `lib/provider.js` | `BrowserProvider` 全部成员（seam 契约见 `dsh-builtin-browser/lib/browser/types.d.ts`）；含默认自启 `defaultAutoStartCommand()` |
 | `lib/dom.js` | 页面内取快照 / a11y / 表单操作注入的脚本（含 checked 状态、代理对安全截断） |
 | `shims/browser.js` | `export * from 'dsh-builtin-browser/browser'`（含 default）：把接缝挂进 profile |
@@ -31,9 +32,10 @@ browser_* 工具（33 个，来自依赖 dsh-builtin-browser 的 tool-browser）
 
 ## 验证
 
-- 插件行为：`node scripts/verify-provider.mjs`（88 项零依赖，真实 `browsersvc` + 本地站点）。
-- 组合包安装路径（官方 `dsh plugin` 流程）：`node scripts/verify-bundle.mjs`（23 项，一次性隔离 `DSH_HOME`）。
+- 插件行为：`node scripts/verify-provider.mjs`（110 项零依赖，真实 `browsersvc` + 本地站点）。
+- 组合包安装路径（官方 `dsh plugin` 流程）：`node scripts/verify-bundle.mjs`（33 项，一次性隔离 `DSH_HOME`；含启动期探测的四类坏形状与工具面静态计数）。
 - 守护进程与 CLI：`node scripts/verify-daemon.mjs`（35 项）。
+- DSH 版本矩阵：`node scripts/verify-matrix.mjs --dsh <bin> … --smoke`（4 个宿主版本 × 12 项）。
 
 ## 许可
 

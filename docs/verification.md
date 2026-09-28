@@ -1,18 +1,21 @@
 # 验收与测试
 
-三条脚本**零依赖、不依赖外网**（只用 Node 内置的 `fetch` / `WebSocket` / `http` 与真实 `browsersvc` + 本地站点）：
+三条脚本**零依赖**（只用 Node 内置的 `fetch` / `WebSocket` / `http` 与真实 `browsersvc` + 本地站点；`verify-matrix.mjs` 的 `--smoke` 需要能解析外网的 `example.com`）：
 
 ```bash
 node scripts/verify-daemon.mjs      # M1 守护进程 + CLI 防御：35/35
 node scripts/verify-provider.mjs    # M2 provider：110 通过，0 失败
-node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）：23/23
+node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）：33/33
+node scripts/verify-matrix.mjs --dsh <bin> --dsh <bin> --smoke   # DSH 版本矩阵：4 个宿主版本 × 12 项
 ```
 
 > ⚠️ **不要在默认 root 上跑**：脚本会按 pid 收敛自己起的实例并清理临时 root（`rmSync`）。它们默认使用 `/tmp` 下的一次性 `DSH_BROWSER_SVC_ROOT`，请保持默认，不要指向 `$DSH_HOME/browser-service`。
 
 ## 各套覆盖什么
 
-**`verify-bundle.mjs`（23 项）** —— 在一次性隔离 `DSH_HOME`（`/tmp`）里真实执行官方安装/移除命令：交付物里只有一个包 → `add <tgz>` 追加依赖与层 → `--dump-config` 里本包层挂出 `browser`（`browserProvider: cdp-daemon`）、`tool-browser` 与 `browser-cdp`，且**三行都没有 not found** → 默认自启命令指向装进来的 `bin/browsersvc.mjs` → `./browser` / `./tool-browser` 转出口的导出键与 `dsh-builtin-browser` 源模块**完全一致** → `remove` 同时清掉依赖与层。不碰默认 profile。
+**`verify-bundle.mjs`（33 项）** —— 在一次性隔离 `DSH_HOME`（`/tmp`）里真实执行官方安装/移除命令：交付物里只有一个包 → `add <tgz>` 追加依赖与层 → `--dump-config` 里本包层挂出 `browser`（`browserProvider: cdp-daemon`）、`tool-browser` 与 `browser-cdp`，且**三行都没有 not found** → 默认自启命令指向装进来的 `bin/browsersvc.mjs` → `./browser` / `./tool-browser` 转出口的导出键与 `dsh-builtin-browser` 源模块**完全一致** → 补出宿主 peer 目录（`scripts/lib/host-peers.mjs`，隔离 home 不会自动生成）后，包入口可 `import`、启动期探测（`plugin/lib/compat.js`）对真实接缝给出 0 error、四种坏形状各报对人、错误文案命中宿主与接缝版本，并静态数出接缝工具面 33 个且含 `browser_a11y` → `remove` 同时清掉依赖与层。不碰默认 profile。
+
+**`verify-matrix.mjs`（4 个宿主版本 × 12 项）** —— 把**同一个 tarball** 分别装进 `--dsh <bin>` 指定的多个 DSH（本机全局 + `npm install --prefix` 装的备版本），每行验 12 项：`add` 退出码 0、依赖指向该 tarball、`dsh.profile.bundles` 追加本包、`--dump-config` 退出码 0、本包层存在且 `browser` 行选中 `cdp-daemon`、`tool-browser` 行存在、没有预期外的 `not found`（只允许 `browser-electron` / `playwright-browser`）、补出宿主 peer、入口可加载并注册出 `cdp-daemon`、启动期探测无 error、探测到的宿主版本与该行一致、`--smoke` 时真开 `example.com` 读回正文。**逐版本串行**（每行一个无头内核，约 600 MB）。
 
 **`verify-provider.mjs`（110 项）** —— 自己起本地站点 + 真实 `browsersvc run`（临时 root/端口），逐项覆盖 session/tab 生命周期、`navigate` 拒非 http(s)、`execute`（表达式/参数/页面异常/超时）、`snapshot`/`a11y`/`content`（4 种格式）/`scrape`（含 `@attr`）、`waitFor` 三态、`click`/`type`/`setValue`/`check`/`getValue`/`clearField`/`selectOption`/`scroll`/`key`、`fillForm`、`screenshot`（含等比缩小/fullPage-jpeg）、`download`、`back`/`forward`/`reload`、`history`/`replay`、`detectChallenge`、`flushAuth`/`restoreAuth`、session 隔离、`reset`/`close`、连接被换掉后会话复活（F22）、自启开关复位（F25）、保存路径准入、默认保存目录（D1：`XDG_DOWNLOAD_DIR` → 本地化 `Downloads` → `~/Downloads` 回落、目录首次写入时建出来、未配置时默认目录之外一律拒绝）、代理对截断、**P1：`maxTabs` 上限与拒绝后不留半开页、无会话时释放连接（守护进程按 `idleMs` 回收 + 自愈）、配置默认值**。
 

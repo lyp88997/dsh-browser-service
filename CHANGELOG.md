@@ -3,7 +3,24 @@
 本文件记录每个版本的变更与**真实缺陷编号**（F = 代码审查/上线验证发现的缺陷，P = 资源/性能专项（0.5.0），B = 按官方打包文档核对发现的问题，U = v0.4.0 合并交付物的改动，P1 见 v0.5.0，F26 见 v0.4.0）。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-验收计数随版本推进：`verify-daemon` 13 → 26 → 31 → 32 → **35**，`verify-provider` 67 → 77 → 83 → 86 → 88 → 95 → **110**，`verify-bundle` 16 → **23**。
+验收计数随版本推进：`verify-daemon` 13 → 26 → 31 → 32 → **35**，`verify-provider` 67 → 77 → 83 → 86 → 88 → 95 → **110**，`verify-bundle` 16 → 23 → **33**，`verify-matrix` 首次引入（4 个宿主版本 × 12 项）。
+
+## [0.5.1] — 2026-09-28
+
+起因：方案文档 P2「DSH 版本适配」。目标是**换 DSH 版本或换接缝版本时，失败能自己说清原因**，而不是抛一句没有指向性的模块导出错误；同时把「支持哪些版本」从口头承诺变成可复现的实测矩阵。
+
+| # | 项 | 影响 | 处理 |
+| --- | --- | --- | --- |
+| P2-1 | 没有兼容性声明与实测矩阵 | 用户不知道该配哪个 DSH；上游一改导出形状，报错看不出是「本插件不适配」 | README 新增「DSH 兼容矩阵」（4 个宿主版本 × 装得上/挂得上/可加载/能浏览）。**不写 `dsh.engines`**——`DshManifest` 里没有该字段（`dsh-package-manifest/lib/types/types.d.ts` 只有 `bundle`/`profile`/`client`/`configTrees`/`moduleFallback`），发明字段只会被忽略 |
+| P2-2 | 给 `@deepseek-ai/dsh` 写 semver peer 是**错的兼容信号** | 想省事写个范围反而误导：`>=0.1.5-rc.1 <0.2.0` 在 semver 预发布规则下只解锁 0.1.5 的预发布，同范围的 `0.1.7-rc.2` 会被判不符 | 刻意**不写** dsh 的 peer 范围，改用「启动期探测 + 人话报错 + 实测矩阵」三件套 |
+| P2-3 | 启动期没有能力探测 | 接缝改名/导出形状变化时，失败形态是上游的模块错（`does not provide an export named …`），用户不知道是本插件的问题 | 新增 `plugin/lib/compat.js`：`inspectSeam`（`browser` 要有函数默认导出与 `BrowserError`；`tool-browser` 要有 `name`/`apply`/`inject`，且 `inject` 含 `tools`、`browser`）+ `readVersions`（读宿主与接缝版本）。`apply()` 开头先探测：不符就打印「插件未启用 —— 浏览器接缝与预期不符（接缝 X，宿主 Y）：…」并**安静退出**；宿主缺 `ctx.browser.registerBrowserProvider` 也报一句人话；版本不在实测清单只告警，不阻断 |
+| P2-4 | 工具面变化没有跟随验证 | 接缝 32 → 33 新增 `browser_a11y` 时，README 与计数会悄悄过期 | `verify-bundle.mjs` 静态数已安装接缝的工具名（`'browser_*'` 去重必须 == 33 且含 `browser_a11y`）——上游加减工具会让我们的验收立刻失败并提示更新文档 |
+| P2-5 | `@deepseek-ai/schemastery` 被当普通依赖装 | 与宿主各持一份实例（官方 peer 规则：需要与宿主共享实例的 dsh 包要同时写 `peerDependencies` 与 `devDependencies`） | 从 `dependencies` 移到 `peerDependencies` + `devDependencies`；隔离环境实测仍可解析（走宿主 peer 目录），并由验收锁住「本包不携带自己的 schemastery」 |
+| P2-6 | 换版本是否还能用没有可复现证据 | 只能靠嘴说 | 新增 `scripts/verify-matrix.mjs`（+ `scripts/lib/host-peers.mjs`、`scripts/lib/matrix-probe.mjs`）：把**同一个 tarball** 装进多个宿主版本，逐版本验 `add` → `--dump-config` → 入口可加载（宿主 peer 可解析）→ `apply(桩 ctx)` 注册出 `cdp-daemon` 且探测无 error → 用装进来的 bin 自启守护进程**真开一个页面**并读回正文 |
+
+- 验收：`verify-bundle.mjs` 23 → **33**。新增 10 项：隔离 profile 里 `import 'dsh-browser-service'`（宿主 peer 可解析）、`readVersions()` 读到宿主与接缝版本、真实接缝 `inspectSeam` 0 fatal、四种坏形状各自致命、`seamMismatchMessage` 文案含期望面、静态数工具面 == 33 且含 `browser_a11y`。
+- 隔离环境补宿主 peer 目录的做法抽成 `scripts/lib/host-peers.mjs` 的 `linkHostPeers()`：真实部署里 boot 过就有 `$DSH_HOME/profiles/node_modules/@deepseek-ai`（240 项 + 一条 `dsh` 自身软链），隔离 home 没有；这里建实体目录逐项软链，再补 `dsh` 自身。**不能把该目录整体做成指向宿主目录的软链**——那样再往里补 `dsh` 会写进只读的宿主目录（EACCES）。
+
 
 ## [0.5.0] — 2026-09-27
 

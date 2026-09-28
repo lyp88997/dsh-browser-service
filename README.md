@@ -27,8 +27,8 @@
 ```bash
 dsh plugin --profile web add dsh-browser-service@latest
 # 也可以钉版本 / 离线分发（同一个包）：
-#   dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.5.0/dsh-browser-service-0.5.0.tgz
-#   dsh plugin --profile web add ./dsh-browser-service-0.5.0.tgz
+#   dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.5.1/dsh-browser-service-0.5.1.tgz
+#   dsh plugin --profile web add ./dsh-browser-service-0.5.1.tgz
 
 # 然后重启 DSH，再校验（应出现 browserProvider: cdp-daemon 与本包层，且本包三行没有 not found）：
 dsh --profile web --dump-config | grep -E 'browserProvider|# == dsh-browser-service|not found'
@@ -118,6 +118,21 @@ node bin/browsersvc.mjs start \
 | 权限 | **不需要 root**；不需要 GUI 库，不需要 Xvfb。容器里 `NoNewPrivs=1` + seccomp 时 Chromium 沙箱起不来，因此固定加 `--no-sandbox --disable-dev-shm-usage` |
 | 网络 | 只监听 **127.0.0.1**（默认公开端口 9333，内核用内部端口）；不依赖外网 |
 | 磁盘 | 一个 profile 里的包体量 ≈ 依赖（`playwright-core` 约 14M，只做 CDP 客户端、**不下载浏览器**）；运行时数据在 `$DSH_HOME/browser-service` |
+
+### DSH 兼容矩阵（实测）
+
+`node scripts/verify-matrix.mjs --dsh <bin> … --smoke` 把**同一个 tarball** 分别装进不同版本的 DSH，逐版本验 12 项（`add` → `--dump-config` → 入口可加载 → `apply(桩 ctx)` 注册出 `cdp-daemon` 且启动期探测无 error → 用装进来的 bin 自启守护进程、真开 `example.com` 读回正文）：
+
+| 宿主 DSH | 结果 | 说明 |
+|---|---|---|
+| `0.1.5-rc.3` | **12/12** ✅ | 本机当前宿主（全局装） |
+| `0.1.7-rc.2` | **12/12** ✅ | npm `latest` / `next` |
+| `0.1.7-rc.1` | **12/12** ✅ | |
+| `0.1.6-alpha.2` | **12/12** ✅ | alpha 通道也验证过 |
+
+- 矩阵用的备版本是 `npm install --prefix /tmp/dsh-mat/<ver> @deepseek-ai/dsh@<ver>` 装的（npm 会把 peer 提升到 `<prefix>/node_modules/@deepseek-ai`，与全局装的层内布局不同，`scripts/lib/host-peers.mjs` 两种都认）。逐版本**串行**跑：一个无头内核约 600 MB，并行会顶到容器内存上限。
+- 接缝（依赖 `dsh-builtin-browser`）实测面为 **0.1.22**：`browser` 导出 `default`（函数）/`BrowserError`/`BrowserRuntime`，`tool-browser` 导出 `name`/`apply`/`inject`/`internals`（**无** `default`）。启动期探测就在 boot 时校验这些形状——不符只会打印一句「插件未启用 —— 浏览器接缝与预期不符（接缝 X，宿主 Y）：…」并安静退出，不再抛上游的模块错。
+- **不写 `dsh.engines`、也不写 `@deepseek-ai/dsh` 的 semver peer**：前者字段不存在（宿主不读），后者在预发布版本上会给出错误的兼容信号（`>=0.1.5-rc.1 <0.2.0` 只解锁 0.1.5 的预发布，`0.1.7-rc.2` 会被判不符）。版本适配靠「探测 + 人话报错 + 上面这张实测表」。
 
 字体/库缺失的症状：截图纯白、中文变方块——用带 `FONTCONFIG_FILE` 的包装脚本，或安装系统字体。
 
@@ -266,14 +281,16 @@ node bin/browsersvc.mjs start \
 ```bash
 node scripts/verify-daemon.mjs      # M1 守护进程 + CLI 防御：35/35
 node scripts/verify-provider.mjs    # M2 provider：110 通过，0 失败
-node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）：23/23
+node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）：33/33
+node scripts/verify-matrix.mjs --dsh <bin> --dsh <bin> --smoke   # 多版本 DSH 兼容矩阵（见「环境要求与兼容性」）
 ```
 
 | 套件 | 项数 | 覆盖 |
 |---|---|---|
 | `verify-daemon.mjs` | **35/35** | 守护进程启停/重启、token 与 401/403 凭据门、只绑回环、上下文隔离、崩溃重启、空闲退出、配置校验、启动失败不留孤儿、`stop` 身份校验、同一连接上的后续请求不免检（F27） |
 | `verify-provider.mjs` | **110 通过 / 0 失败** | 33 个工具的行为与边界（含 `execute`/`a11y`/`scrape`/`form`/`screenshot`/`download`/`auth`）、会话隔离与复活、保存路径准入与默认保存目录（D1）、代理对截断、**P1：`maxTabs` 上限（拒绝后不留半开页）、无会话时释放连接（守护进程按 `idleMs` 回收 + 自愈）、配置默认值** |
-| `verify-bundle.mjs` | **23/23** | 在一次性隔离 `DSH_HOME` 里跑官方 `add` → `--dump-config` → 转出口形状比对 → `remove`，不碰默认 profile |
+| `verify-bundle.mjs` | **33/33** | 在一次性隔离 `DSH_HOME` 里跑官方 `add` → `--dump-config` → 转出口形状比对 → **P2：宿主 peer 解析、启动期探测（好/坏形状）、工具面计数 == 33** → `remove`，不碰默认 profile |
+| `verify-matrix.mjs` | **4 个宿主版本 × 12 项** | 把同一个 tarball 装进不同版本的 DSH：`add` → `--dump-config` → 入口可加载 → `apply(桩 ctx)` 注册出 provider 且探测无 error → `--smoke` 用装进来的 bin 自启守护进程、真开页面读回正文 |
 
 完整输出（35 条 PASS 原文、DSH 内端到端日志、npm 短命令实测、未自动化覆盖的部分）见 [`docs/verification.md`](https://github.com/lyp88997/dsh-browser-service/blob/main/docs/verification.md)。
 
@@ -351,11 +368,11 @@ npm publish --access public
 ```
 
 - **单一交付物**：根 `package.json` 里声明 `"dsh": {"bundle": {"patch": "./plugin/cordis.patch.yml"}}`，同一个包同时提供 `bin/browsersvc.mjs`（守护进程 CLI）、`plugin/lib/*`（provider）与 `plugin/shims/*`（接缝/工具面转出口）。装完这一个包，`--dump-config` 里就出现 `# == dsh-browser-service` 层、`browser`（`browserProvider: cdp-daemon`）、`tool-browser`、`browser-cdp` 四行。
-- 依赖：`dsh-builtin-browser`（提供 seam 与 33 个工具，转出后面向 profile 生效）、`playwright-core`（只做 CDP 客户端，**不下载浏览器**）、`@deepseek-ai/schemastery`（配置 schema）。它们由 profile 的 pnpm 解析；接缝包需要的宿主 peer（`@deepseek-ai/cordis` / `dsh-tools` / `dsh-llm` …）由 DSH 在 boot 时建立的 `$DSH_HOME/profiles/node_modules/@deepseek-ai/*`（240 个入口）提供——profile 内任何包向上查找都能命中，所以不需要把它们写进本包依赖。
+- 依赖：`dsh-builtin-browser`（提供 seam 与 33 个工具，转出后面向 profile 生效）、`playwright-core`（只做 CDP 客户端，**不下载浏览器**）。配置 schema 用的 `@deepseek-ai/schemastery` 按官方 peer 规则写成 `peerDependencies` + `devDependencies`（**与宿主共享同一实例**，不再进 `dependencies`）；接缝包需要的其它宿主 peer（`@deepseek-ai/cordis` / `dsh-tools` / `dsh-llm` …）由 DSH 在 boot 时建立的 `$DSH_HOME/profiles/node_modules/@deepseek-ai/*`（240 个入口）提供——profile 内任何包向上查找都能命中，所以不需要把它们写进本包依赖。
 - 每个版本在 GitHub Release 挂两份资产：**不带版本号**的 `dsh-browser-service.tgz`（供 `releases/latest/download/dsh-browser-service.tgz` 这类**永不过期**的固定地址引用——插件市场条目就用它）与带版本号的 `dsh-browser-service-<v>.tgz`（文档里建议钉版本用）。
-- `dist/` 已 gitignore。**npm 已发布**：`dsh-browser-service@0.4.0`（首版）、`@0.4.1`、`@0.4.2`、`@0.4.3`、`@0.4.4`、`@0.5.0`（2026-09-27；`npm view dsh-browser-service` 可见 tarball 与 shasum）。0.4.1 与 0.4.2 是**只为刷新 npm 页面上的 README**（前者修 0.4.0 tarball 里的发布前文本，后者带上对齐生态后的 README），这两版**代码分别与 0.4.0 / 0.4.1 完全相同**；0.4.3 起有真实代码变更（默认 `downloadDir` 对齐内置 provider，见 CHANGELOG 的 D1），0.4.4 修掉代理的 keep-alive 免检缺陷（F27），0.5.0 收口资源问题（`maxTabs` 上限 + 无会话时释放连接，见 CHANGELOG 的 P1）。
+- `dist/` 已 gitignore。**npm 已发布**：`dsh-browser-service@0.4.0`（首版）、`@0.4.1`、`@0.4.2`、`@0.4.3`、`@0.4.4`、`@0.5.0`、`@0.5.1`（2026-09-28；`npm view dsh-browser-service` 可见 tarball 与 shasum）。0.4.1 与 0.4.2 是**只为刷新 npm 页面上的 README**（前者修 0.4.0 tarball 里的发布前文本，后者带上对齐生态后的 README），这两版**代码分别与 0.4.0 / 0.4.1 完全相同**；0.4.3 起有真实代码变更（默认 `downloadDir` 对齐内置 provider，见 CHANGELOG 的 D1），0.4.4 修掉代理的 keep-alive 免检缺陷（F27），0.5.0 收口资源问题（`maxTabs` 上限 + 无会话时释放连接，见 CHANGELOG 的 P1），0.5.1 做 DSH 版本适配（启动期能力探测 + 多版本实测矩阵，见 CHANGELOG 的 P2）。
 - 踩坑：发布 token 必须是勾了 **Bypass 2FA** 的 granular token 且权限为 Read and write，否则 `npm publish` 报 `403 Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages`。旧名 `dsh-browser-cdp` 不能用：npm 上已被 drscrewdriver 的同名包占用（0.17.4）。
-- 官方文档提到的 `dsh.engines` / `dsh.compatibility` 元数据本包**没写**：宿主只认 `dsh.bundle`（`@deepseek-ai/dsh-package-manifest` 的 `DshManifest` 里没有这两个字段），它们只被插件市场的发现逻辑读取，宿主既不读也不校验。
+- 官方文档提到的 `dsh.engines` / `dsh.compatibility` 元数据本包**没写**：宿主只认 `dsh.bundle`（`@deepseek-ai/dsh-package-manifest` 的 `DshManifest` 里没有这两个字段），它们只被插件市场的发现逻辑读取，宿主既不读也不校验。也**刻意不给 `@deepseek-ai/dsh` 写 semver peer 范围**——semver 的预发布规则下 `>=0.1.5-rc.1 <0.2.0` 这类范围只解锁 `0.1.5` 的预发布，同范围的 `0.1.7-rc.2` 会被判为不符，写了反而给出**错误的兼容信号**；DSH 版本的适配改成「启动期探测 + 人话报错 + 多版本实测矩阵」（见「环境要求与兼容性」）。
 
 ## 进度
 
@@ -365,13 +382,14 @@ npm publish --access public
 | **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerBrowserProvider`），复用接缝包的 33 个 `browser_*` 工具 | ✅ 完成（110 项 + DSH 内端到端） |
 | **M6** | 代码审查 18 条缺陷修复（F1–F18） | ✅ 完成（v0.3.0 → v0.3.3） |
 | **M7** | 「一个包装完」：单一交付物，接缝与工具面由依赖 `dsh-builtin-browser` 转出 | ✅ 完成（v0.4.0） |
+| **P2** | DSH 版本适配：启动期能力探测 + 人话报错（`plugin/lib/compat.js`）、`schemastery` 改 peer、多版本实测矩阵 | ✅ 完成（v0.5.1） |
 
 未来可能做：面向「任何插件」的通用 HTTP 面（`/fetch` `/screenshot` `/eval`，M4）；CDP-over-pipe 代理，让 univer 也复用守护进程（M5，进阶、未验证）。
 
 ## 更新记录
 
-- **[CHANGELOG.md](https://github.com/lyp88997/dsh-browser-service/blob/main/CHANGELOG.md)** —— v0.5.0 / 0.4.4 / 0.4.3 / 0.4.2 / 0.4.1 / 0.4.0 / 0.3.3 / 0.3.2 / 0.3.1 / 0.3.0，含每条真实缺陷（F1–F27、P1、B1–B4、U1–U6、D1）的复现与修复。
-- 摘要：`0.5.0` 资源收口（`maxTabs` 上限 + 无会话时释放连接，让守护进程能按 `idleMs` 回收）；`0.4.4` 修掉代理 keep-alive 免检（F27）；`0.4.3` 默认 `downloadDir` 对齐内置 provider（系统 Downloads，保存路径默认就有范围）；`0.4.2` 按热门插件共性重写 README（纯文档，代码同 0.4.1）；`0.4.1` 修正 npm 页面上的 README（代码同 0.4.0）；`0.4.0` 合并成单一交付物（一个包装完）；`0.3.0`–`0.3.3` 代码审查与按官方文档核对打包（26 条修复）。
+- **[CHANGELOG.md](https://github.com/lyp88997/dsh-browser-service/blob/main/CHANGELOG.md)** —— v0.5.1 / 0.5.0 / 0.4.4 / 0.4.3 / 0.4.2 / 0.4.1 / 0.4.0 / 0.3.3 / 0.3.2 / 0.3.1 / 0.3.0，含每条真实缺陷（F1–F27、P1、P2、B1–B4、U1–U6、D1）的复现与修复。
+- 摘要：`0.5.1` DSH 版本适配（启动期能力探测 + 人话报错、`schemastery` 改 peer、多版本实测矩阵）；`0.5.0` 资源收口（`maxTabs` 上限 + 无会话时释放连接，让守护进程能按 `idleMs` 回收）；`0.4.4` 修掉代理 keep-alive 免检（F27）；`0.4.3` 默认 `downloadDir` 对齐内置 provider（系统 Downloads，保存路径默认就有范围）；`0.4.2` 按热门插件共性重写 README（纯文档，代码同 0.4.1）；`0.4.1` 修正 npm 页面上的 README（代码同 0.4.0）；`0.4.0` 合并成单一交付物（一个包装完）；`0.3.0`–`0.3.3` 代码审查与按官方文档核对打包（26 条修复）。
 
 ## 文档
 
