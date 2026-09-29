@@ -68,6 +68,27 @@ if (spec) {
     } catch (error) {
       out.render = `ERR ${String(error?.message ?? error).split('\n')[0]}`;
     }
+    // 纯函数（窗口几何夹取 / 设置规整）：客户端半边唯一有分支逻辑的地方，直接在探针里真跑一遍。
+    const inner = plugin?.internals;
+    out.internals = inner && typeof inner === 'object' ? Object.keys(inner).sort() : null;
+    if (typeof inner?.clampRect === 'function') {
+      out.clamp = {
+        oversize: inner.clampRect({ x: 9999, y: 9999, w: 9999, h: 9999 }, { w: 800, h: 600 }),
+        undersize: inner.clampRect({ x: -50, y: -50, w: 10, h: 10 }, { w: 800, h: 600 }),
+        anchored: inner.clampRect({ x: null, y: null, w: 400, h: 300 }, { w: 800, h: 600 }),
+      };
+    }
+    if (typeof inner?.normalizeSettings === 'function') {
+      const normalized = inner.normalizeSettings({ quality: 999, maxWidth: 1, pollMs: 1, lines: 9999, tab: 'nope' });
+      out.settings = {
+        quality: normalized.quality,
+        maxWidth: normalized.maxWidth,
+        pollMs: normalized.pollMs,
+        lines: normalized.lines,
+        tab: normalized.tab,
+        autoStream: normalized.autoStream,
+      };
+    }
   } catch (error) {
     out.factory = `ERR ${String(error?.message ?? error).split('\n')[0]}`;
   }

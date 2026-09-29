@@ -10,6 +10,8 @@
  *   3. 请求体上限 64 KB，动作按白名单转发。
  * 客户端半边（`plugin/client.js`）轮询这些路由，把画面显示成浮动窗口。
  */
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { readConsole, readNetwork, readOps } from '../../src/opslog.mjs';
 import { defaultRoot } from '../../src/config.mjs';
 
@@ -17,6 +19,15 @@ export const PANEL_PATH = '/browser-service/panel.json';
 export const LIVE_IMAGE_PATH = '/browser-service/live.jpg';
 export const LIVE_STATE_PATH = '/browser-service/live.json';
 export const LIVE_INPUT_PATH = '/browser-service/live';
+
+/** 自身版本号：面板「设置」区显示用（读自己的 package.json，读不到就留空）。 */
+const PACKAGE_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version ?? '';
+  } catch {
+    return '';
+  }
+})();
 
 /** 面板一次最多拉多少条：够看，又不至于把网页拖垮。 */
 const MAX_LINES = 200;
@@ -113,11 +124,25 @@ function readJson(req) {
   });
 }
 
-/** 面板载荷：只给条目数与条目，不回传本机绝对路径。 */
-export function panelPayload({ root = defaultRoot(), lines = DEFAULT_LINES } = {}) {
+/**
+ * 面板载荷：只给条目数与条目，外加「设置」区要显示的只读服务信息。
+ * 仍然不回传本机绝对路径 —— 下载目录只回**目录名**（用户自己配的，回全路径没有额外用处）。
+ */
+export function panelPayload({ root = defaultRoot(), lines = DEFAULT_LINES, service = {} } = {}) {
   const shape = ({ total, entries }) => ({ total, entries });
   return {
     generatedAt: new Date().toISOString(),
+    service: {
+      version: PACKAGE_VERSION,
+      session: service.session ?? null,
+      cdpUrl: service.cdpUrl ?? '',
+      downloadDir: service.downloadDir ? basename(service.downloadDir) : '',
+      maxTabs: service.maxTabs ?? null,
+      idleMs: service.idleMs ?? null,
+      captureConsole: service.captureConsole !== false,
+      captureNetwork: service.captureNetwork !== false,
+      live: service.live ?? null,
+    },
     ops: shape(readOps({ root, lines })),
     console: shape(readConsole({ root, lines })),
     network: shape(readNetwork({ root, lines })),
@@ -127,9 +152,9 @@ export function panelPayload({ root = defaultRoot(), lines = DEFAULT_LINES } = {
 /**
  * 注册面板路由；返回 disposer。宿主没有 webServer 服务时由调用方跳过。
  * @param {{webServer: {register: Function}}} ctx
- * @param {{provider?: object}} [deps] 浏览器 provider（实时窗口用）；没有则 live 路由回 503。
+ * @param {{provider?: object, config?: object}} [deps] 浏览器 provider（实时窗口用）+ 生效配置（设置区显示用）
  */
-export function registerPanel(ctx, { provider } = {}) {
+export function registerPanel(ctx, { provider, config } = {}) {
   /** 当前正在推流的视图：`{ sessionId, view }`。 */
   let streaming = null;
   /** 最近一次被客户端取帧的时间：用来判断「面板是不是已经不看了」。 */
@@ -143,13 +168,29 @@ export function registerPanel(ctx, { provider } = {}) {
     if (current?.view) await current.view.stop().catch(() => {});
   };
 
+  /** 「设置」区的只读服务信息：生效配置 + 当前取帧参数。 */
+  const serviceInfo = () => {
+    const id = targetId();
+    const view = viewFor(id);
+    return {
+      session: id ?? null,
+      cdpUrl: config?.cdpUrl,
+      downloadDir: config?.downloadDir,
+      maxTabs: config?.maxTabs,
+      idleMs: config?.idleMs,
+      captureConsole: config?.captureConsole,
+      captureNetwork: config?.captureNetwork,
+      live: view?.options ?? null,
+    };
+  };
+
   const panelHandler = (req, res) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       json(res, 405, { error: '只支持 GET' }, { allow: 'GET' });
       return;
     }
     try {
-      const body = JSON.stringify(panelPayload({ lines: linesOf(req.url) }));
+      const body = JSON.stringify(panelPayload({ lines: linesOf(req.url), service: serviceInfo() }));
       res.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
         'cache-control': 'no-store',
@@ -184,7 +225,7 @@ export function registerPanel(ctx, { provider } = {}) {
       return;
     }
     const state = await view.state();
-    json(res, 200, { ...state, session: id });
+    json(res, 200, { ...state, session: id, options: view.options ?? null });
   };
 
   /** live.jpg：长轮询取一帧。客户端把 seq 通过 ?since= 带回来，服务端只回更新的帧。 */
@@ -193,12 +234,19 @@ export function registerPanel(ctx, { provider } = {}) {
       json(res, 503, { error: '没有浏览器 provider' });
       return;
     }
-    let since = 0;
+    let search;
     try {
-      since = Number(new URL(req.url, 'http://127.0.0.1').searchParams.get('since')) || 0;
+      search = new URL(req.url, 'http://127.0.0.1').searchParams;
     } catch {
-      since = 0;
+      search = new URLSearchParams();
     }
+    const since = Number(search.get('since')) || 0;
+    // 设置区能调画质与最大边（越界由 liveview 夹住）；不传就沿用当前值。
+    const options = {
+      quality: search.get('quality'),
+      maxWidth: search.get('max'),
+      maxHeight: search.get('maxh'),
+    };
     const id = targetId();
     const view = viewFor(id);
     if (!view) {
@@ -208,7 +256,8 @@ export function registerPanel(ctx, { provider } = {}) {
     // 会话/标签页换了：旧的流没有意义，先停掉。
     if (streaming && streaming.sessionId !== id) await stopStreaming();
     try {
-      await view.start();
+      await view.start(options);
+      const applied = view.options ?? {};
       streaming = { sessionId: id, view };
       lastFrameAt = Date.now();
       const frame = await view.waitFrame({ since, timeoutMs: MAX_FRAME_WAIT_MS });
@@ -224,6 +273,8 @@ export function registerPanel(ctx, { provider } = {}) {
         'x-frame-seq': String(frame.seq),
         'x-frame-w': String(frame.width),
         'x-frame-h': String(frame.height),
+        'x-frame-quality': String(applied.quality ?? ''),
+        'x-frame-max': `${applied.maxWidth ?? ''}x${applied.maxHeight ?? ''}`,
       });
       res.end(req.method === 'HEAD' ? undefined : frame.jpeg);
     } catch (error) {

@@ -147,7 +147,7 @@ export async function apply(ctx, config) {
     return;
   }
   ctx.inject(['webServer'], (webCtx) => {
-    const dispose = registerPanel(webCtx, { provider });
+    const dispose = registerPanel(webCtx, { provider, config });
     webCtx.effect(() => () => dispose(), 'browser-cdp: read-only panel route + live view routes');
     webCtx.logger?.info?.(`browser-cdp: 面板数据路由已挂到 ${PANEL_PATH}（实时窗口：${LIVE_STATE_PATH}）`);
   });

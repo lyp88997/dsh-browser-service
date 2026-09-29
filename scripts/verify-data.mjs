@@ -290,12 +290,26 @@ try {
   const liveRoutes = new Map();
   const liveActions = [];
   const shown = { live: false, seq: 0, at: Date.now(), url: 'https://example.com/', title: '观测页', width: 800, height: 600, pageScaleFactor: 1 };
+  // 模仿真 LiveView 的取帧参数语义：按边界夹取、缺字段沿用当前值（真实现是 resolveStreamOptions）。
+  const liveStream = { quality: 70, maxWidth: 1280, maxHeight: 800 };
+  const clampInt = (value, min, max, fallback) => {
+    const raw = Number(value);
+    if (!Number.isFinite(raw)) return fallback;
+    return Math.min(max, Math.max(min, Math.floor(raw)));
+  };
   const stubView = {
-    async start() {
-      if (shown.live) return; // 真 LiveView.start() 是幂等的：重复取帧不该凭空多出画面
+    get options() {
+      return { ...liveStream };
+    },
+    async start(options = {}) {
+      liveStream.quality = clampInt(options.quality, 10, 95, liveStream.quality);
+      liveStream.maxWidth = clampInt(options.maxWidth, 320, 1920, liveStream.maxWidth);
+      liveStream.maxHeight = clampInt(options.maxHeight, 240, 1200, liveStream.maxHeight);
+      if (shown.live) return this.options; // 真 LiveView.start() 是幂等的：重复取帧不该凭空多出画面
       shown.live = true;
       shown.seq += 1;
       shown.at = Date.now();
+      return this.options;
     },
     async stop() {
       shown.live = false;
@@ -332,7 +346,18 @@ try {
     effect: () => {},
     logger: quietLogger,
   });
-  const disposeLive = registerPanel(liveRoutesFor(liveRoutes), { provider: liveProvider });
+  const disposeLive = registerPanel(liveRoutesFor(liveRoutes), {
+    provider: liveProvider,
+    // 设置区读的就是这份生效配置（下载目录只回目录名，不回绝对路径）。
+    config: {
+      cdpUrl: 'http://127.0.0.1:9333',
+      downloadDir: `${root}/产出`,
+      maxTabs: 5,
+      idleMs: 300_000,
+      captureConsole: true,
+      captureNetwork: false,
+    },
+  });
   check(
     '实时窗口注册四条 exact 路由',
     liveRoutes.size === 4 && [PANEL_PATH, LIVE_STATE_PATH, LIVE_IMAGE_PATH, LIVE_INPUT_PATH].every((path) => liveRoutes.get(path)?.kind === 'exact'),
@@ -372,6 +397,42 @@ try {
   const stale = await fetch(`${liveBase}${LIVE_IMAGE_PATH}?since=1`);
   await stale.arrayBuffer();
   check('没有新帧时回 204（客户端不会收到重复画面）', stale.status === 204, `status=${stale.status}`);
+
+  // ── P5：设置区的画质/最大边真的作用到取帧上，并把生效值读回来 ──────────────
+  console.log('\nP5 实时窗口：取帧参数与设置区');
+  const tuned = await fetch(`${liveBase}${LIVE_IMAGE_PATH}?since=0&quality=85&max=800&maxh=600`);
+  await tuned.arrayBuffer();
+  check(
+    '画质与最大边按查询串透传给取帧',
+    tuned.status === 200 && tuned.headers.get('x-frame-quality') === '85' && tuned.headers.get('x-frame-max') === '800x600',
+    `quality=${tuned.headers.get('x-frame-quality')} max=${tuned.headers.get('x-frame-max')}`,
+  );
+  const bounded = await fetch(`${liveBase}${LIVE_IMAGE_PATH}?since=0&quality=999&max=40&maxh=99999`);
+  await bounded.arrayBuffer();
+  check(
+    '越界的画质/最大边被夹到安全边界',
+    bounded.status === 200 && bounded.headers.get('x-frame-quality') === '95' && bounded.headers.get('x-frame-max') === '320x1200',
+    `quality=${bounded.headers.get('x-frame-quality')} max=${bounded.headers.get('x-frame-max')}`,
+  );
+  const stateTuned = await (await fetch(`${liveBase}${LIVE_STATE_PATH}`)).json();
+  check(
+    'live.json 带出生效中的取帧参数',
+    stateTuned.options?.quality === 95 && stateTuned.options?.maxWidth === 320 && stateTuned.options?.maxHeight === 1200,
+    JSON.stringify(stateTuned.options),
+  );
+  const settingsPayload = await (await fetch(`${liveBase}${PANEL_PATH}?lines=1`)).json();
+  const service = settingsPayload.service ?? {};
+  const pkgVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  check(
+    '设置区读到只读服务信息（版本/会话/上限/录制开关）',
+    service.version === pkgVersion && service.session === 's1' && service.maxTabs === 5 && service.captureNetwork === false && service.idleMs === 300_000,
+    JSON.stringify(service),
+  );
+  check(
+    '设置区只回下载目录名、不回绝对路径',
+    service.downloadDir === '产出' && !JSON.stringify(settingsPayload).includes(root),
+    `downloadDir=${service.downloadDir}`,
+  );
 
   const typed = await post({ kind: 'text', text: '实时窗口 ok' });
   await typed.text();

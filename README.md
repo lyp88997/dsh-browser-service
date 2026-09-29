@@ -27,8 +27,8 @@
 ```bash
 dsh plugin --profile web add dsh-browser-service@latest
 # 也可以钉版本 / 离线分发（同一个包）：
-#   dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.7.0/dsh-browser-service-0.7.0.tgz
-#   dsh plugin --profile web add ./dsh-browser-service-0.7.0.tgz
+#   dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.8.0/dsh-browser-service-0.8.0.tgz
+#   dsh plugin --profile web add ./dsh-browser-service-0.8.0.tgz
 
 # 然后重启 DSH，再校验（应出现 browserProvider: cdp-daemon 与本包层，且本包三行没有 not found）：
 dsh --profile web --dump-config | grep -E 'browserProvider|# == dsh-browser-service|not found'
@@ -230,19 +230,21 @@ node bin/browsersvc.mjs start \
 
 > **v0.3.0 起公开端口要求 `Authorization: Bearer <token>`**（token 由 `browsersvc` 生成，落在 0600 的 `service.json`）。插件自动读取它，无需改配置；但 `browsersvc` 与插件必须一起升级——旧插件 + 新守护进程会在 401 上失败（见「升级与卸载」）。
 
-## 网页面板与实时窗口（0.7.0）
+## 网页面板与实时窗口（0.8.0）
 
-同一个包还带一个网页浮动面板（右下角的小胶囊，点开是四标签卡片：**网页 / 操作 / 控制台 / 网络**）。它不新增任何工具，也不改 33 个 `browser_*` 的行为：
+同一个包还带一个网页浮动窗口（右下角的小胶囊，点开是卡片；左侧一竖排入口：**网页 / 操作 / 控制台 / 网络 / 设置**）。它不新增任何工具，也不改 33 个 `browser_*` 的行为：
 
-- **「网页」标签是实时窗口**（0.7.0 起，默认打开）：直接把浏览器当前标签的画面流到卡片里，**你能看到的那个页面就是真页面**——在窗口里点按钮、滚轮滚动、键盘输入、地址栏回车跳转，都会被原样打进真浏览器；窗口外面（对话里）的助手调用与你在窗口里的操作作用在同一个页面上。
-  - 取帧走 [`plugin/lib/liveview.mjs`](https://github.com/lyp88997/dsh-browser-service/blob/main/plugin/lib/liveview.mjs)：`Page.startScreencast`（JPEG，质量 70，最长边 1280）经我们的回环代理下发，**只在画面变化时发帧**（静止时零流量，实测一帧约 6.8 KB）；操作走 `Input.dispatchMouseEvent`/`insertText`/`dispatchKeyEvent`/`mouseWheel`。
-  - 三条路由（都在 `plugin/lib/panel.js`，与面板同源、`exact` 匹配）：`GET /browser-service/live.jpg?since=N`（长轮询，最多等 1.5 s，只回比 `since` 新的帧，没有新帧回 204）、`GET /browser-service/live.json`（地址栏/标题/推流状态每秒同步）、`POST /browser-service/live`（`down`/`up`/`move`/`wheel`/`text`/`key`/`reload`/`goto`，`DELETE` 停流）。
-  - **只对本机回环请求开放**：非回环来源 403，跨站 POST 403（校验 `origin`/`referer` 与 Host 同源），方法白名单 405。若你从别的机器直连 DSH Web，日志标签照常、实时窗口会被拦。
+- **窗口本身可拖可调**（0.8.0 起）：按住标题栏拖动、拖右下角手柄缩放、双击标题栏或 `⤢` 最大化/还原、`收起` 回到右下角胶囊；位置与大小记在浏览器本地（`localStorage`，设置里可关）。窗口被拉出视口或浏览器窗口缩放时，会自动收回可见范围。
+- **「网页」入口是实时窗口**（0.7.0 起，默认打开）：直接把浏览器当前标签的画面流到卡片里，**你能看到的那个页面就是真页面**——在窗口里点按钮、滚轮滚动、键盘输入、地址栏回车跳转，都会被原样打进真浏览器；窗口外面（对话里）的助手调用与你在窗口里的操作作用在同一个页面上。
+  - 取帧走 [`plugin/lib/liveview.mjs`](https://github.com/lyp88997/dsh-browser-service/blob/main/plugin/lib/liveview.mjs)：`Page.startScreencast`（JPEG，默认质量 70、最长边 1280）经我们的回环代理下发，**只在画面变化时发帧**（静止时零流量，实测一帧约 6.8 KB）；操作走 `Input.dispatchMouseEvent`/`insertText`/`dispatchKeyEvent`/`mouseWheel`。画质与最大边由客户端按当前设置随取帧请求发下去（`?quality=&max=&maxh=`，越界由服务端夹到安全范围），改完下一次取帧即生效。
+  - 三条路由（都在 `plugin/lib/panel.js`，与面板同源、`exact` 匹配）：`GET /browser-service/live.jpg?since=N[&quality=&max=&maxh=]`（长轮询，最多等 1.5 s，只回比 `since` 新的帧，没有新帧回 204）、`GET /browser-service/live.json`（地址栏/标题/推流状态与生效中的取帧参数每秒同步）、`POST /browser-service/live`（`down`/`up`/`move`/`wheel`/`text`/`key`/`reload`/`goto`，`DELETE` 停流）。
+  - **只对本机回环请求开放**：非回环来源 403，跨站 POST 403（校验 `origin`/`referer` 与 Host 同源），方法白名单 405。若你从别的机器直连 DSH Web，日志入口照常、实时窗口会被拦。
   - 省电：卡片收起/切换/暂停/页面不可见时客户端发 `DELETE` 停流；宿主半边 30 s 没收到取帧也自动停（`setInterval` 已 `unref`）。
-- 客户端半边是 [`plugin/client.js`](https://github.com/lyp88997/dsh-browser-service/blob/main/plugin/client.js)——手写、零构建，走 DSH 的 `window.__ModuleLoader__` 协议，只 `require('react')`（平台种子表内的包），样式全内联，不引第三方 UI 库。
-- 宿主半边是 [`plugin/lib/panel.js`](https://github.com/lyp88997/dsh-browser-service/blob/main/plugin/lib/panel.js)——在 `ctx.webServer` 上挂四条 `exact` 路由（`/browser-service/panel.json`、`live.jpg`、`live.json`、`live`）；`panel.json` 只允许 GET/HEAD、`no-store`、载荷里不含本机绝对路径。没有 `webServer` 的宿主不会挂这些路由，插件照常工作。
-- 日志三标签的数据就是上面那三个 JSONL 的尾巴（`?lines=` 默认 40，上限 200），所以 CLI 与面板看到的是同一份真相；轮询 2.5 s，页面不可见时停轮询，卡片上有「暂停/继续」与「收起」。
-- 需要在 DSH 里**重启一次**才会出现（客户端插件在启动时收集），改 `plugin/client.js` 后不必重启（客户端入口支持热替换），改宿主半边要重启。
+- **「设置」入口**（0.8.0 起）里能调的都会真的作用下去：画面质量（40/55/70/85/95）、最大边（480/800/1280/1600/1920）、打开即取帧、面板刷新间隔、日志条数、默认入口、是否记住窗口位置与大小；下面还有一块只读的**当前生效服务信息**（版本、会话、CDP 地址、保存目录名、标签上限、空闲回收、控制台/网络录制开关、生效中的取帧参数）。控制台与网络的录制开关属于插件配置（`captureConsole`/`captureNetwork`），改插件配置要重启。
+- 客户端半边是 [`plugin/client.js`](https://github.com/lyp88997/dsh-browser-service/blob/main/plugin/client.js)——手写、零构建，走 DSH 的 `window.__ModuleLoader__` 协议，只 `require('react')`（平台种子表内的包），样式全内联，不引第三方 UI 库。窗口几何与设置只做两件有分支的事——夹取与规整——都写成纯函数（`clampRect` / `normalizeSettings`），并由 `verify-bundle.mjs` 的客户端探针真跑一遍断言。
+- 宿主半边是 [`plugin/lib/panel.js`](https://github.com/lyp88997/dsh-browser-service/blob/main/plugin/lib/panel.js)——在 `ctx.webServer` 上挂四条 `exact` 路由（`/browser-service/panel.json`、`live.jpg`、`live.json`、`live`）；`panel.json` 只允许 GET/HEAD、`no-store`、载荷里不含本机绝对路径（下载目录只回目录名）。没有 `webServer` 的宿主不会挂这些路由，插件照常工作。
+- 日志三入口的数据就是上面那三个 JSONL 的尾巴（`?lines=` 默认 40，上限 200），所以 CLI 与窗口看到的是同一份真相；轮询间隔按设置（默认 2.5 s），页面不可见时停轮询，卡片上有「暂停/继续」与「收起」。
+- 窗口在页面里出现需要 DSH **重启一次**（客户端插件在启动时收集）；只改 `plugin/client.js` 刷新页面即可，但改宿主半边（`plugin/lib/panel.js`、`plugin/lib/liveview.mjs`）必须重启。
 
 ## 架构与工作原理
 
@@ -302,8 +304,8 @@ node bin/browsersvc.mjs start \
 ```bash
 node scripts/verify-daemon.mjs      # M1 守护进程 + CLI 防御：35/35
 node scripts/verify-provider.mjs    # M2 provider：110 通过，0 失败
-node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）：41/41
-node scripts/verify-data.mjs        # P3 数据层 + P4 实时窗口：61 通过，0 失败
+node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）：44/44
+node scripts/verify-data.mjs        # P3 数据层 + P4/P5 实时窗口：66 通过，0 失败
 node scripts/verify-matrix.mjs --dsh <bin> --dsh <bin> --smoke   # 多版本 DSH 兼容矩阵（见「环境要求与兼容性」）
 ```
 
@@ -311,8 +313,8 @@ node scripts/verify-matrix.mjs --dsh <bin> --dsh <bin> --smoke   # 多版本 DSH
 |---|---|---|
 | `verify-daemon.mjs` | **35/35** | 守护进程启停/重启、token 与 401/403 凭据门、只绑回环、上下文隔离、崩溃重启、空闲退出、配置校验、启动失败不留孤儿、`stop` 身份校验、同一连接上的后续请求不免检（F27） |
 | `verify-provider.mjs` | **110 通过 / 0 失败** | 33 个工具的行为与边界（含 `execute`/`a11y`/`scrape`/`form`/`screenshot`/`download`/`auth`）、会话隔离与复活、保存路径准入与默认保存目录（D1）、代理对截断、**P1：`maxTabs` 上限（拒绝后不留半开页）、无会话时释放连接（守护进程按 `idleMs` 回收 + 自愈）、配置默认值** |
-| `verify-bundle.mjs` | **41/41** | 在一次性隔离 `DSH_HOME` 里跑官方 `add` → `--dump-config` → 转出口形状比对 → **P2：宿主 peer 解析、启动期探测（好/坏形状）、工具面计数 == 33** → **P3：客户端半边（loader 协议、cordis 插件形状、`apply` 注册到 `shell.overlay`、只点平台种子表）** → **P4：客户端引用的三条实时路由与服务端一字不差** → `remove`，不碰默认 profile |
-| `verify-data.mjs` | **61 通过 / 0 失败** | **P3：`ops`/`console`/`network`/`har`/`cookies` 五个观测面 + 只读面板路由**——操作日志（含通用追踪覆盖 `snapshot`/`content`/`screenshot`/`listTabs`、失败记 `ok:false` 与原因）、控制台两类、网络两阶段、HAR 落盘与复制、cookie/localStorage 导出注入与权限、`panel.json` 的形状/行数/405/卸载、IO 失败不抛 → **P4：实时窗口四条路由与三道闸**（取帧 JPEG 与帧序号头、无新帧 204、打字/点击/goto 转发、未知动作 400、非本机 403、跨站 403、方法 405、DELETE 停流、无 provider 503、dispose 一起摘掉） |
+| `verify-bundle.mjs` | **44/44** | 在一次性隔离 `DSH_HOME` 里跑官方 `add` → `--dump-config` → 转出口形状比对 → **P2：宿主 peer 解析、启动期探测（好/坏形状）、工具面计数 == 33** → **P3：客户端半边（loader 协议、cordis 插件形状、`apply` 注册到 `shell.overlay`、只点平台种子表）** → **P4：客户端引用的三条实时路由与服务端一字不差** → **P5：客户端导出的几何夹取与设置规整纯函数（三态夹取 + 越界回落）** → `remove`，不碰默认 profile |
+| `verify-data.mjs` | **66 通过 / 0 失败** | **P3：`ops`/`console`/`network`/`har`/`cookies` 五个观测面 + 只读面板路由**——操作日志（含通用追踪覆盖 `snapshot`/`content`/`screenshot`/`listTabs`、失败记 `ok:false` 与原因）、控制台两类、网络两阶段、HAR 落盘与复制、cookie/localStorage 导出注入与权限、`panel.json` 的形状/行数/405/卸载、IO 失败不抛 → **P4：实时窗口四条路由与三道闸**（取帧 JPEG 与帧序号头、无新帧 204、打字/点击/goto 转发、未知动作 400、非本机 403、跨站 403、方法 405、DELETE 停流、无 provider 503、dispose 一起摘掉） → **P5：取帧参数透传与夹取（`x-frame-quality`/`x-frame-max`）、`live.json.options` 回读、`panel.json.service` 只读服务块**（版本/会话/上限/开关一致，且载荷不含本机绝对路径） |
 | `verify-matrix.mjs` | **4 个宿主版本 × 12 项** | 把同一个 tarball 装进不同版本的 DSH：`add` → `--dump-config` → 入口可加载 → `apply(桩 ctx)` 注册出 provider 且探测无 error → `--smoke` 用装进来的 bin 自启守护进程、真开页面读回正文 |
 
 完整输出（35 条 PASS 原文、DSH 内端到端日志、npm 短命令实测、未自动化覆盖的部分）见 [`docs/verification.md`](https://github.com/lyp88997/dsh-browser-service/blob/main/docs/verification.md)。
@@ -393,7 +395,7 @@ npm publish --access public
 - **单一交付物**：根 `package.json` 里声明 `"dsh": {"bundle": {"patch": "./plugin/cordis.patch.yml"}}`，同一个包同时提供 `bin/browsersvc.mjs`（守护进程 CLI）、`plugin/lib/*`（provider）与 `plugin/shims/*`（接缝/工具面转出口）。装完这一个包，`--dump-config` 里就出现 `# == dsh-browser-service` 层、`browser`（`browserProvider: cdp-daemon`）、`tool-browser`、`browser-cdp` 四行。
 - 依赖：`dsh-builtin-browser`（提供 seam 与 33 个工具，转出后面向 profile 生效）、`playwright-core`（只做 CDP 客户端，**不下载浏览器**）。配置 schema 用的 `@deepseek-ai/schemastery` 按官方 peer 规则写成 `peerDependencies` + `devDependencies`（**与宿主共享同一实例**，不再进 `dependencies`）；接缝包需要的其它宿主 peer（`@deepseek-ai/cordis` / `dsh-tools` / `dsh-llm` …）由 DSH 在 boot 时建立的 `$DSH_HOME/profiles/node_modules/@deepseek-ai/*`（240 个入口）提供——profile 内任何包向上查找都能命中，所以不需要把它们写进本包依赖。
 - 每个版本在 GitHub Release 挂两份资产：**不带版本号**的 `dsh-browser-service.tgz`（供 `releases/latest/download/dsh-browser-service.tgz` 这类**永不过期**的固定地址引用——插件市场条目就用它）与带版本号的 `dsh-browser-service-<v>.tgz`（文档里建议钉版本用）。
-- `dist/` 已 gitignore。**npm 已发布**：`dsh-browser-service@0.4.0`（首版）、`@0.4.1`、`@0.4.2`、`@0.4.3`、`@0.4.4`、`@0.5.0`、`@0.5.1`、`@0.6.0`、`@0.7.0`（2026-09-29；`npm view dsh-browser-service` 可见 tarball 与 shasum）。0.4.1 与 0.4.2 是**只为刷新 npm 页面上的 README**（前者修 0.4.0 tarball 里的发布前文本，后者带上对齐生态后的 README），这两版**代码分别与 0.4.0 / 0.4.1 完全相同**；0.4.3 起有真实代码变更（默认 `downloadDir` 对齐内置 provider，见 CHANGELOG 的 D1），0.4.4 修掉代理的 keep-alive 免检缺陷（F27），0.5.0 收口资源问题（`maxTabs` 上限 + 无会话时释放连接，见 CHANGELOG 的 P1），0.5.1 做 DSH 版本适配（启动期能力探测 + 多版本实测矩阵，见 CHANGELOG 的 P2），0.6.0 加可观测性与网页面板（五个观测面 CLI + 只读浮动看板，见 CHANGELOG 的 P3），0.7.0 把面板升级成**实时交互网页窗口**（帧流 + 点击/滚动/打字/地址栏，只对本机回环开放，见 CHANGELOG 的 P4）。
+- `dist/` 已 gitignore。**npm 已发布**：`dsh-browser-service@0.4.0`（首版）、`@0.4.1`、`@0.4.2`、`@0.4.3`、`@0.4.4`、`@0.5.0`、`@0.5.1`、`@0.6.0`、`@0.7.0`、`@0.8.0`（2026-09-29；`npm view dsh-browser-service` 可见 tarball 与 shasum）。0.4.1 与 0.4.2 是**只为刷新 npm 页面上的 README**（前者修 0.4.0 tarball 里的发布前文本，后者带上对齐生态后的 README），这两版**代码分别与 0.4.0 / 0.4.1 完全相同**；0.4.3 起有真实代码变更（默认 `downloadDir` 对齐内置 provider，见 CHANGELOG 的 D1），0.4.4 修掉代理的 keep-alive 免检缺陷（F27），0.5.0 收口资源问题（`maxTabs` 上限 + 无会话时释放连接，见 CHANGELOG 的 P1），0.5.1 做 DSH 版本适配（启动期能力探测 + 多版本实测矩阵，见 CHANGELOG 的 P2），0.6.0 加可观测性与网页面板（五个观测面 CLI + 只读浮动看板，见 CHANGELOG 的 P3），0.7.0 把面板升级成**实时交互网页窗口**（帧流 + 点击/滚动/打字/地址栏，只对本机回环开放，见 CHANGELOG 的 P4），0.8.0 重做窗口与入口（可拖动/可缩放的浮动窗口 + 左侧一竖排入口 + 设置区与只读服务信息 + 取帧参数随请求透传并被服务端夹取，见 CHANGELOG 的 P5）。
 - 踩坑：发布 token 必须是勾了 **Bypass 2FA** 的 granular token 且权限为 Read and write，否则 `npm publish` 报 `403 Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages`。旧名 `dsh-browser-cdp` 不能用：npm 上已被 drscrewdriver 的同名包占用（0.17.4）。
 - 官方文档提到的 `dsh.engines` / `dsh.compatibility` 元数据本包**没写**：宿主只认 `dsh.bundle`（`@deepseek-ai/dsh-package-manifest` 的 `DshManifest` 里没有这两个字段），它们只被插件市场的发现逻辑读取，宿主既不读也不校验。也**刻意不给 `@deepseek-ai/dsh` 写 semver peer 范围**——semver 的预发布规则下 `>=0.1.5-rc.1 <0.2.0` 这类范围只解锁 `0.1.5` 的预发布，同范围的 `0.1.7-rc.2` 会被判为不符，写了反而给出**错误的兼容信号**；DSH 版本的适配改成「启动期探测 + 人话报错 + 多版本实测矩阵」（见「环境要求与兼容性」）。
 
@@ -408,13 +410,14 @@ npm publish --access public
 | **P2** | DSH 版本适配：启动期能力探测 + 人话报错（`plugin/lib/compat.js`）、`schemastery` 改 peer、多版本实测矩阵 | ✅ 完成（v0.5.1） |
 | **P3** | 可观测性与交互：`ops`/`console`/`network`/`har`/`cookies` 五个 CLI 观测面 + 只读网页面板（`plugin/lib/panel.js` + `plugin/client.js`） | ✅ 完成（v0.6.0） |
 | **P4** | 实时交互网页窗口：面板「网页」标签把真页面帧流进 DSH 网页，点击/滚动/打字/地址栏直接作用于真浏览器（`plugin/lib/liveview.mjs` + 三条 live 路由 + 客户端 `LivePane`），零新增工具 | ✅ 完成（v0.7.0） |
+| **P5** | 窗口与入口重做：可拖动/可缩放的浮动窗口（双击标题栏或 `⤢` 最大化）、左侧一竖排入口（网页/操作/控制台/网络/设置）、设置区（画质/最大边/轮询/日志条数/记住窗口）与只读服务信息、取帧参数随请求透传并被服务端夹取 | ✅ 完成（v0.8.0） |
 
 未来可能做：面向「任何插件」的通用 HTTP 面（`/fetch` `/screenshot` `/eval`，M4）；CDP-over-pipe 代理，让 univer 也复用守护进程（M5，进阶、未验证）。
 
 ## 更新记录
 
-- **[CHANGELOG.md](https://github.com/lyp88997/dsh-browser-service/blob/main/CHANGELOG.md)** —— v0.7.0 / 0.6.0 / 0.5.1 / 0.5.0 / 0.4.4 / 0.4.3 / 0.4.2 / 0.4.1 / 0.4.0 / 0.3.3 / 0.3.2 / 0.3.1 / 0.3.0，含每条真实缺陷（F1–F27、P1–P4、B1–B4、U1–U6、D1）的复现与修复。
-- 摘要：`0.7.0` 实时交互网页窗口（面板「网页」标签帧流 + 点击/滚动/打字/地址栏直接作用于真浏览器，只对本机回环开放，零新增工具）；`0.6.0` 可观测性与交互（`ops`/`console`/`network`/`har`/`cookies` 五个 CLI 观测面 + 只读网页面板，零新增工具）；`0.5.1` DSH 版本适配（启动期能力探测 + 人话报错、`schemastery` 改 peer、多版本实测矩阵）；`0.5.0` 资源收口（`maxTabs` 上限 + 无会话时释放连接，让守护进程能按 `idleMs` 回收）；`0.4.4` 修掉代理 keep-alive 免检（F27）；`0.4.3` 默认 `downloadDir` 对齐内置 provider（系统 Downloads，保存路径默认就有范围）；`0.4.2` 按热门插件共性重写 README（纯文档，代码同 0.4.1）；`0.4.1` 修正 npm 页面上的 README（代码同 0.4.0）；`0.4.0` 合并成单一交付物（一个包装完）；`0.3.0`–`0.3.3` 代码审查与按官方文档核对打包（26 条修复）。
+- **[CHANGELOG.md](https://github.com/lyp88997/dsh-browser-service/blob/main/CHANGELOG.md)** —— v0.8.0 / v0.7.0 / 0.6.0 / 0.5.1 / 0.5.0 / 0.4.4 / 0.4.3 / 0.4.2 / 0.4.1 / 0.4.0 / 0.3.3 / 0.3.2 / 0.3.1 / 0.3.0，含每条真实缺陷（F1–F27、P1–P5、B1–B4、U1–U6、D1）的复现与修复。
+- 摘要：`0.8.0` 窗口与入口重做（可拖动/可缩放的浮动窗口、双击标题栏最大化、左侧一竖排入口、设置区与只读服务信息、取帧画质与最大边随请求透传并在服务端夹取，零新增工具）；`0.7.0` 实时交互网页窗口（面板「网页」标签帧流 + 点击/滚动/打字/地址栏直接作用于真浏览器，只对本机回环开放，零新增工具）；`0.6.0` 可观测性与交互（`ops`/`console`/`network`/`har`/`cookies` 五个 CLI 观测面 + 只读网页面板，零新增工具）；`0.5.1` DSH 版本适配（启动期能力探测 + 人话报错、`schemastery` 改 peer、多版本实测矩阵）；`0.5.0` 资源收口（`maxTabs` 上限 + 无会话时释放连接，让守护进程能按 `idleMs` 回收）；`0.4.4` 修掉代理 keep-alive 免检（F27）；`0.4.3` 默认 `downloadDir` 对齐内置 provider（系统 Downloads，保存路径默认就有范围）；`0.4.2` 按热门插件共性重写 README（纯文档，代码同 0.4.1）；`0.4.1` 修正 npm 页面上的 README（代码同 0.4.0）；`0.4.0` 合并成单一交付物（一个包装完）；`0.3.0`–`0.3.3` 代码审查与按官方文档核对打包（26 条修复）。
 
 ## 文档
 

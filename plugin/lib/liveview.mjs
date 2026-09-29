@@ -10,10 +10,42 @@
  * 帧只在页面有变化时下发（静止时零流量）。
  */
 
-/** 一帧 JPEG 的质量与尺寸上限：够看清，又不至于每帧几十 KB。 */
+/** 一帧 JPEG 的质量与尺寸上限：够看清，又不至于每帧几十 KB（客户端可在设置里调）。 */
 const QUALITY = 70;
 const MAX_WIDTH = 1280;
 const MAX_HEIGHT = 800;
+
+/** 设置区能调的边界：越界一律夹住，坏值回落默认，免得把浏览器坑死。 */
+const QUALITY_MIN = 10;
+const QUALITY_MAX = 95;
+const WIDTH_MIN = 320;
+const WIDTH_MAX = 1920;
+const HEIGHT_MIN = 240;
+const HEIGHT_MAX = 1200;
+
+function clampInt(value, min, max, fallback) {
+  const raw = Number(value);
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(raw)));
+}
+
+/**
+ * 把「设置区」传来的取帧参数规整成可用的一组值（纯函数，便于单独测）。
+ * 不传的字段沿用当前值，坏值回落当前值，越界夹到边界。
+ */
+export function resolveStreamOptions(options = {}, current = {}) {
+  const base = {
+    quality: clampInt(current.quality, QUALITY_MIN, QUALITY_MAX, QUALITY),
+    maxWidth: clampInt(current.maxWidth, WIDTH_MIN, WIDTH_MAX, MAX_WIDTH),
+    maxHeight: clampInt(current.maxHeight, HEIGHT_MIN, HEIGHT_MAX, MAX_HEIGHT),
+  };
+  if (options == null || typeof options !== 'object') return base;
+  return {
+    quality: clampInt(options.quality, QUALITY_MIN, QUALITY_MAX, base.quality),
+    maxWidth: clampInt(options.maxWidth, WIDTH_MIN, WIDTH_MAX, base.maxWidth),
+    maxHeight: clampInt(options.maxHeight, HEIGHT_MIN, HEIGHT_MAX, base.maxHeight),
+  };
+}
 
 /** 页面 URL/标题的缓存时间（每次取标题是一次 CDP 往返，别每帧都问）。 */
 const META_TTL_MS = 500;
@@ -70,14 +102,22 @@ export class LiveView {
 
   #log;
 
-  constructor(page, { log, navigationTimeoutMs = 30_000 } = {}) {
+  #options;
+
+  constructor(page, { log, navigationTimeoutMs = 30_000, options } = {}) {
     this.#page = page;
     this.#log = log;
     this.#navigationTimeoutMs = navigationTimeoutMs;
+    this.#options = resolveStreamOptions(options ?? {});
   }
 
   get page() {
     return this.#page;
+  }
+
+  /** 当前取帧参数（质量/最大边），面板的「设置」区显示用。 */
+  get options() {
+    return { ...this.#options };
   }
 
   /** 是否正在推帧（输入转发不要求开流）。 */
@@ -107,9 +147,16 @@ export class LiveView {
     return cdp;
   }
 
-  /** 开流（幂等）。页面已关、或宿主浏览器不支持录屏时抛错，由调用方决定怎么提示。 */
-  async start() {
-    if (this.#streaming) return this.state();
+  /**
+   * 开流（幂等）。页面已关、或宿主浏览器不支持录屏时抛错，由调用方决定怎么提示。
+   * options 可带 { quality, maxWidth, maxHeight }：与当前不同就按新参数重开流（设置区改画质用）。
+   */
+  async start(options = {}) {
+    const next = resolveStreamOptions(options, this.#options);
+    const changed = next.quality !== this.#options.quality
+      || next.maxWidth !== this.#options.maxWidth
+      || next.maxHeight !== this.#options.maxHeight;
+    if (this.#streaming && !changed) return this.state();
     const cdp = await this.#session();
     if (!this.#listening) {
       cdp.on('Page.screencastFrame', (event) => {
@@ -123,22 +170,25 @@ export class LiveView {
       this.#listening = true;
     }
     try {
+      if (this.#streaming) await cdp.send('Page.stopScreencast').catch(() => {});
       await cdp.send('Page.startScreencast', {
         format: 'jpeg',
-        quality: QUALITY,
-        maxWidth: MAX_WIDTH,
-        maxHeight: MAX_HEIGHT,
+        quality: next.quality,
+        maxWidth: next.maxWidth,
+        maxHeight: next.maxHeight,
         everyNthFrame: 1,
       });
     } catch (error) {
       await cdp.detach().catch(() => {});
       this.#cdp = null;
       this.#listening = false;
+      this.#streaming = false;
       throw error;
     }
+    this.#options = next;
     this.#streaming = true;
     this.#startedAt = Date.now();
-    this.#note('info', 'browser-cdp: 实时窗口已开流');
+    this.#note('info', `browser-cdp: 实时窗口已开流（质量 ${next.quality}，最大边 ${next.maxWidth}×${next.maxHeight}）`);
     return this.state();
   }
 
@@ -284,4 +334,15 @@ export class LiveView {
   }
 }
 
-export const LIVE_VIEW_LIMITS = { QUALITY, MAX_WIDTH, MAX_HEIGHT, META_TTL_MS };
+export const LIVE_VIEW_LIMITS = {
+  QUALITY,
+  QUALITY_MIN,
+  QUALITY_MAX,
+  MAX_WIDTH,
+  WIDTH_MIN,
+  WIDTH_MAX,
+  MAX_HEIGHT,
+  HEIGHT_MIN,
+  HEIGHT_MAX,
+  META_TTL_MS,
+};

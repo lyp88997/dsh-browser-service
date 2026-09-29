@@ -258,6 +258,18 @@ console.log('5c. 客户端半边（网页面板）');
   check('看板组件能渲染（没有数据时回落胶囊）', c.render === 'null', String(c.render));
   check('客户端半边引用实时窗口的三条路由（与服务端一字不差）',
     (c.liveRoutes ?? []).length === 3, JSON.stringify(c.liveRoutes));
+  check('客户端半边导出可测的纯函数（几何夹取 / 设置规整）',
+    ['clampInt', 'clampRect', 'normalizeSettings'].every((name) => (c.internals ?? []).includes(name)),
+    JSON.stringify(c.internals));
+  check('窗口几何夹取：超界收进视口、没记过位置时贴右下角',
+    c.clamp?.oversize?.w === 800 && c.clamp?.oversize?.h === 600 && c.clamp?.oversize?.x === 0 && c.clamp?.oversize?.y === 0
+      && c.clamp?.undersize?.w === 320 && c.clamp?.undersize?.h === 240
+      && c.clamp?.anchored?.x === 400 && c.clamp?.anchored?.y === 300,
+    JSON.stringify(c.clamp));
+  check('设置规整：越界夹取、非法入口回落网页',
+    c.settings?.quality === 95 && c.settings?.maxWidth === 320 && c.settings?.pollMs === 500
+      && c.settings?.lines === 200 && c.settings?.tab === 'live',
+    JSON.stringify(c.settings));
   const seeds = new Set([
     'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client',
     '@deepseek-ai/cordis', '@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-client-ui-slots',

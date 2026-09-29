@@ -36,8 +36,8 @@ browser_* 工具（33 个，来自依赖 dsh-builtin-browser 的 tool-browser）
 ## 验证
 
 - 插件行为：`node scripts/verify-provider.mjs`（110 项零依赖，真实 `browsersvc` + 本地站点）。
-- 组合包安装路径（官方 `dsh plugin` 流程）：`node scripts/verify-bundle.mjs`（41 项，一次性隔离 `DSH_HOME`；含启动期探测的四类坏形状、工具面静态计数与客户端半边 5c 段）。
-- 观测面与实时窗口：`node scripts/verify-data.mjs`（61 项，真实 `browsersvc` + 本地站点；ops/console/network/har/cookies + `panel.json` 路由 + P4 四条 live 路由与三道闸）。
+- 组合包安装路径（官方 `dsh plugin` 流程）：`node scripts/verify-bundle.mjs`（44 项，一次性隔离 `DSH_HOME`；含启动期探测的四类坏形状、工具面静态计数与客户端半边 5c 段 11 项）。
+- 观测面与实时窗口：`node scripts/verify-data.mjs`（66 项，真实 `browsersvc` + 本地站点；ops/console/network/har/cookies + `panel.json` 路由 + P4/P5 四条 live 路由与三道闸、取帧参数透传与夹取、只读服务信息块）。
 - 守护进程与 CLI：`node scripts/verify-daemon.mjs`（35 项）。
 - DSH 版本矩阵：`node scripts/verify-matrix.mjs --dsh <bin> … --smoke`（4 个宿主版本 × 12 项）。
 

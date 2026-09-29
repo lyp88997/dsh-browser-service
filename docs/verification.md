@@ -5,8 +5,8 @@
 ```bash
 node scripts/verify-daemon.mjs      # M1 守护进程 + CLI 防御：35/35
 node scripts/verify-provider.mjs    # M2 provider：110 通过，0 失败
-node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）：41/41
-node scripts/verify-data.mjs        # P3 观测面 + P4 实时窗口：61 通过，0 失败
+node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）：44/44
+node scripts/verify-data.mjs        # P3 观测面 + P4/P5 实时窗口：66 通过，0 失败
 node scripts/verify-matrix.mjs --dsh <bin> --dsh <bin> --smoke   # DSH 版本矩阵：4 个宿主版本 × 12 项
 ```
 
@@ -14,9 +14,9 @@ node scripts/verify-matrix.mjs --dsh <bin> --dsh <bin> --smoke   # DSH 版本矩
 
 ## 各套覆盖什么
 
-**`verify-bundle.mjs`（41 项）** —— 在一次性隔离 `DSH_HOME`（`/tmp`）里真实执行官方安装/移除命令：交付物里只有一个包 → `add <tgz>` 追加依赖与层 → `--dump-config` 里本包层挂出 `browser`（`browserProvider: cdp-daemon`）、`tool-browser` 与 `browser-cdp`，且**三行都没有 not found** → 默认自启命令指向装进来的 `bin/browsersvc.mjs` → `./browser` / `./tool-browser` 转出口的导出键与 `dsh-builtin-browser` 源模块**完全一致** → 补出宿主 peer 目录（`scripts/lib/host-peers.mjs`，隔离 home 不会自动生成）后，包入口可 `import`、启动期探测（`plugin/lib/compat.js`）对真实接缝给出 0 error、四种坏形状各报对人、错误文案命中宿主与接缝版本，并静态数出接缝工具面 33 个且含 `browser_a11y` → **P3 客户端半边（5c，8 项）**：tarball 带 `plugin/client.js`、`exports["./client"]` 与 `dsh.client.platform==='web'`、入口走 `window.__ModuleLoader__.load` 且 `id` = 包名、factory 返回标准 cordis 插件（`apply` + `inject: ['slots']`）、`apply` 把看板注册到 `shell.overlay`、组件可渲染、裸 `require` 全在 9 个平台种子里、**P4：客户端引用的三条实时路由与服务端一字不差**（`scripts/lib/client-probe.mjs` 只读探针） → `remove` 同时清掉依赖与层。不碰默认 profile。
+**`verify-bundle.mjs`（44 项）** —— 在一次性隔离 `DSH_HOME`（`/tmp`）里真实执行官方安装/移除命令：交付物里只有一个包 → `add <tgz>` 追加依赖与层 → `--dump-config` 里本包层挂出 `browser`（`browserProvider: cdp-daemon`）、`tool-browser` 与 `browser-cdp`，且**三行都没有 not found** → 默认自启命令指向装进来的 `bin/browsersvc.mjs` → `./browser` / `./tool-browser` 转出口的导出键与 `dsh-builtin-browser` 源模块**完全一致** → 补出宿主 peer 目录（`scripts/lib/host-peers.mjs`，隔离 home 不会自动生成）后，包入口可 `import`、启动期探测（`plugin/lib/compat.js`）对真实接缝给出 0 error、四种坏形状各报对人、错误文案命中宿主与接缝版本，并静态数出接缝工具面 33 个且含 `browser_a11y` → **P3 客户端半边（5c，11 项）**：tarball 带 `plugin/client.js`、`exports["./client"]` 与 `dsh.client.platform==='web'`、入口走 `window.__ModuleLoader__.load` 且 `id` = 包名、factory 返回标准 cordis 插件（`apply` + `inject: ['slots']`）、`apply` 把看板注册到 `shell.overlay`、组件可渲染、裸 `require` 全在 9 个平台种子里、**P4：客户端引用的三条实时路由与服务端一字不差**、**P5：客户端导出的 `clampInt`/`clampRect`/`normalizeSettings`——几何三态夹取（越界收缩、过小抬到最小、`null` 锚定右下角）与设置规整（越界夹取、未知入口回落 `live`）**（`scripts/lib/client-probe.mjs` 只读探针） → `remove` 同时清掉依赖与层。不碰默认 profile。
 
-**`verify-data.mjs`（61 项）** —— 自己起本地站点 + 真实 `browsersvc run`（临时 root/端口）与真 provider，覆盖 P3 的五个观测面与面板路由：操作日志（`navigate`/`execute` 入账、`ms`/`ok`/会话/标签齐、**通用追踪覆盖 `snapshot`/`content`/`screenshot`/`listTabs`**、失败记 `ok:false` 与错误原因、`open` 不入账、人话表格有汇总行、`--lines` 生效）；控制台（`log`/`error` 两类）；网络（`request`/`response` 两阶段、状态码与耗时、抓到 `/api`、**不记头与体**）；HAR（关闭会话后落盘、报路径与字节、HAR JSON 含本次请求、`--out` 复制、拒绝覆盖、`--session` 挑文件）；cookie/localStorage（导出字段与 0600 权限、`--url` 命中/不命中、注入、新会话隔离）；面板（`panel.json` 三份数据、`?lines=1`、条目是真操作、载荷不含绝对路径、`POST` → 405、卸载后路由消失）；容错（落盘 IO 失败不抛）。
+**`verify-data.mjs`（66 项）** —— 自己起本地站点 + 真实 `browsersvc run`（临时 root/端口）与真 provider，覆盖 P3 的五个观测面与面板路由：操作日志（`navigate`/`execute` 入账、`ms`/`ok`/会话/标签齐、**通用追踪覆盖 `snapshot`/`content`/`screenshot`/`listTabs`**、失败记 `ok:false` 与错误原因、`open` 不入账、人话表格有汇总行、`--lines` 生效）；控制台（`log`/`error` 两类）；网络（`request`/`response` 两阶段、状态码与耗时、抓到 `/api`、**不记头与体**）；HAR（关闭会话后落盘、报路径与字节、HAR JSON 含本次请求、`--out` 复制、拒绝覆盖、`--session` 挑文件）；cookie/localStorage（导出字段与 0600 权限、`--url` 命中/不命中、注入、新会话隔离）；面板（`panel.json` 三份数据、`?lines=1`、条目是真操作、载荷不含绝对路径、`POST` → 405、卸载后路由消失）；容错（落盘 IO 失败不抛）；**P4/P5 实时窗口**（取帧返回真 JPEG 与 `x-frame-seq/w/h`、无新帧 204、`?quality=&max=&maxh=` 透传并回 `x-frame-quality`/`x-frame-max`、越界夹到安全范围、`live.json.options` 与推流状态、`panel.json.service` 只读服务块的版本/会话/上限/录制开关、下载目录只回目录名且整份载荷不含本机绝对路径、打字/点击/goto 转发进真浏览器、未知动作 400、非回环 403、跨站 403、方法 405、`DELETE` 停流、无 provider 503、dispose 一起摘掉路由）。
 
 **P4 实时窗口（同脚本内 16 项）** —— 用假 provider + 桩 view（不真开浏览器）逐条打**四条 `exact` 路由**与**三道闸**：一次 `registerPanel` 挂上四条路由；`live.json` 报会话与页面状态；`live.jpg` 回 JPEG 且带 `x-frame-seq`/`x-frame-w`/`x-frame-h`，没有新帧回 204；推流后状态变 `live:true`；打字、点击坐标、`goto`（走 `provider.openUrl`）都被转发；未知动作 400；`POST` 跨站 403；非本机来源（`remoteAddress: 10.0.0.9`）403；取帧路由 `POST` 405；`DELETE` 停流；没有 provider 503；`dispose` 后四条路由一起摘掉。
 
