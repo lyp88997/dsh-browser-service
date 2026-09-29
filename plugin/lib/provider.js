@@ -15,6 +15,7 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultRoot } from '../../src/config.mjs';
 import { collectA11y, collectContent, collectScrape, collectSnapshot, detectChallengeMarkers, fillFields, readElementValue } from './dom.js';
+import { LiveView } from './liveview.mjs';
 import { appendConsole, appendNetwork, appendOp, clip, clipJson } from '../../src/opslog.mjs';
 
 /**
@@ -69,6 +70,8 @@ const TRACED_SKIP = new Set([
   // reset 会清空 session.history/seq，而追踪是「跑完再记账」⇒ 记它反而把刚清空的账本又写一行。
   // history 是读账本本身，记进去等于自指。这两个都不进 ops。
   'reset', 'history',
+  // P4：实时窗口的取流/取目标不是「浏览器操作」，不进 ops（否则每秒一次取帧就把账本刷满）。
+  'liveView', 'liveTarget',
 ]);
 const TARGET_INVALID = 'BROWSER_TARGET_INVALID';
 const ATTACH_FAILED = 'BROWSER_CDP_ATTACH_FAILED';
@@ -130,6 +133,9 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     #sessionSeq = 0;
 
     #autoStarted = false;
+
+    // P4：最近活跃的会话 id —— 实时窗口（网页面板）不带会话参数时用它。
+    #lastActive = null;
 
     /** 廉价可用性：只反映依赖是否就绪，不做任何网络探测（daemon 未起时由 open() 报错）。 */
     available() {
@@ -281,6 +287,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
      */
     async #liveSession(id) {
       const session = this.#session(id);
+      this.#lastActive = session.id;
       const conn = await this.#browser();
       const active = session.tabs.get(session.active);
       // 连接还是同一条、当前标签页也还活着 ⇒ 无需处理。否则（连接被换掉，或当前标签页已死）
@@ -297,6 +304,9 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
 
     async #revive(session, conn) {
       const stale = session.context;
+      // 实时窗口绑在旧页面上：换页前先停流，否则 CDP 会话留在已经死掉的页上。
+      await session.live?.stop();
+      session.live = null;
       try {
         const context = await conn.newContext({
           viewport: { width: config.viewportWidth, height: config.viewportHeight },
@@ -603,9 +613,10 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
         await context.close().catch(() => {});
         throw fail(`browser: 无法在隔离上下文里新建标签页：${describe(error)}`, ATTACH_FAILED, error);
       }
-      const session = { id, label: label ?? id, conn: browser, reviving: null, context, tabs: new Map(), active: '', tabSeq: 0, history: [], seq: 0, closed: false };
+      const session = { id, label: label ?? id, conn: browser, reviving: null, context, tabs: new Map(), active: '', tabSeq: 0, history: [], seq: 0, closed: false, live: null };
       session.active = this.#addTab(session, page);
       this.#sessions.set(id, session);
+      this.#lastActive = id;
       note('info', `browser-cdp: 打开会话 ${id}${label ? `（${label}）` : ''}`);
       return id;
     }
@@ -615,6 +626,8 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
       if (!session) return;
       this.#sessions.delete(session.id);
       session.closed = true;
+      await session.live?.stop();
+      session.live = null;
       await session.context.close().catch(() => {});
       await this.#releaseIfIdle();
     }
@@ -647,6 +660,35 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
       this.#conns.clear();
       this.#conn = null;
       for (const conn of conns) await conn?.close?.().catch(() => {});
+    }
+
+    // ---- 实时窗口（P4 / 0.7.0）：面板里的「看得见、点得动」的网页 ----
+
+    /**
+     * 把一个会话的当前标签页包成实时视图（画面流 + 输入转发）。页面被换掉（切标签、会话重建）
+     * 时就换一个新视图 —— 旧的 CDP 会话绑在旧页面上，留着没有意义。返回 null 表示当前没有
+     * 可用的会话或标签页（面板据此提示用户先 browser_open）。
+     */
+    liveView(id) {
+      const session = this.#sessions.get(String(id));
+      if (!session || session.closed) return null;
+      const page = session.tabs.get(session.active);
+      if (!page || page.isClosed()) return null;
+      if (session.live && session.live.page === page) return session.live;
+      void session.live?.stop();
+      session.live = new LiveView(page, {
+        log: { info: (message) => note('info', message), warn: (message) => note('warn', message) },
+        navigationTimeoutMs: config.navigationTimeoutMs,
+      });
+      return session.live;
+    }
+
+    /** 最近活跃的会话 id（面板不带会话参数时用它）；一个活会话都没有时返回 null。 */
+    liveTarget() {
+      const id = this.#lastActive;
+      if (id && this.#sessions.has(id)) return id;
+      const last = [...this.#sessions.keys()].pop();
+      return last ?? null;
     }
 
     async openUrl(id, request, signal) {
@@ -722,6 +764,11 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
       const page = session.tabs.get(tabIdStr);
       if (!page) throw fail(`browser: 标签页 "${tabIdStr}" 不在本会话`, TAB_UNKNOWN);
       session.tabs.delete(tabIdStr);
+      // 关掉的正是实时窗口在播的那一页：先停流（下一次取帧会自动接到新的当前页上）。
+      if (session.live && session.live.page === page) {
+        await session.live.stop();
+        session.live = null;
+      }
       if (!page.isClosed()) await page.close().catch(() => {});
       if (session.tabs.size === 0) {
         const fresh = await session.context.newPage();
@@ -733,6 +780,8 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
 
     async reset(id) {
       const session = await this.#liveSession(id);
+      await session.live?.stop();
+      session.live = null;
       for (const page of session.tabs.values()) {
         if (!page.isClosed()) await page.close().catch(() => {});
       }

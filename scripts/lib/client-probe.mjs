@@ -30,7 +30,13 @@ out.loads = loaded.map((spec) => ({ id: spec?.id, factory: typeof spec?.factory 
 const spec = loaded[0];
 if (spec) {
   // 种子表只给命名空间，不真需要 React 实现：这些桩够走完注册与一次渲染。
-  const react = { useState: (value) => [value, () => {}], useEffect: () => {}, createElement: () => null };
+  const react = {
+    useState: (value) => [value, () => {}],
+    useEffect: () => {},
+    useRef: (value) => ({ current: value }),
+    useCallback: (fn) => fn,
+    createElement: () => null,
+  };
   try {
     const plugin = spec.factory((name) => {
       if (name === 'react') return react;
@@ -72,6 +78,8 @@ if (spec) {
 const source = readFileSync(join(installed, 'plugin', 'client.js'), 'utf8');
 const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 out.requires = [...new Set((code.match(/require\(['"]([^'"]+)['"]\)/g) ?? []).map((hit) => hit.replace(/^require\(['"]/, '').replace(/['"]\)$/, '')))];
+// 实时窗口的三条路由必须与服务端一字不差（服务端路由是 exact 匹配，写错了只会静默 404）。
+out.liveRoutes = ['/browser-service/live.jpg', '/browser-service/live.json', '/browser-service/live'].filter((path) => code.includes(`'${path}'`));
 out.pkgName = pkgName;
 
 console.log(JSON.stringify(out));

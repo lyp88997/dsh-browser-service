@@ -7,7 +7,7 @@
 import { exec } from 'node:child_process';
 import Schema from '@deepseek-ai/schemastery';
 import { createProvider } from './provider.js';
-import { PANEL_PATH, registerPanel } from './panel.js';
+import { LIVE_STATE_PATH, PANEL_PATH, registerPanel } from './panel.js';
 import { SEAM_PACKAGE, TESTED_HOSTS, inspectSeam, readVersions, seamMismatchMessage } from './compat.js';
 
 export const name = 'browser-cdp';
@@ -147,8 +147,8 @@ export async function apply(ctx, config) {
     return;
   }
   ctx.inject(['webServer'], (webCtx) => {
-    const dispose = registerPanel(webCtx);
-    webCtx.effect(() => () => dispose(), 'browser-cdp: read-only panel route');
-    webCtx.logger?.info?.(`browser-cdp: 面板数据路由已挂到 ${PANEL_PATH}`);
+    const dispose = registerPanel(webCtx, { provider });
+    webCtx.effect(() => () => dispose(), 'browser-cdp: read-only panel route + live view routes');
+    webCtx.logger?.info?.(`browser-cdp: 面板数据路由已挂到 ${PANEL_PATH}（实时窗口：${LIVE_STATE_PATH}）`);
   });
 }

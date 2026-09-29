@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appendOp, readOps } from '../src/opslog.mjs';
-import { PANEL_PATH, registerPanel } from '../plugin/lib/panel.js';
+import { LIVE_IMAGE_PATH, LIVE_INPUT_PATH, LIVE_STATE_PATH, PANEL_PATH, registerPanel } from '../plugin/lib/panel.js';
 import { createProvider } from '../plugin/lib/provider.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -252,14 +252,14 @@ try {
 
   // ── 网页面板：宿主半边的只读 JSON 路由 ───────────────────────────────────
   console.log('\nP3 面板：宿主只读路由');
-  let route = null;
+  const panelRoutes = new Map();
   const panelEffects = [];
   const fakeCtx = {
     webServer: {
       register: (entry) => {
-        route = entry;
+        panelRoutes.set(entry.path, entry);
         return () => {
-          route = null;
+          panelRoutes.delete(entry.path);
         };
       },
     },
@@ -267,8 +267,10 @@ try {
     logger: { info() {}, warn() {}, error() {} },
   };
   const disposePanel = registerPanel(fakeCtx);
-  check('路由注册成 exact + PANEL_PATH', route?.kind === 'exact' && route.path === PANEL_PATH);
-  const panelServer = createServer((request, response) => route.handler(request, response));
+  const panelRoute = panelRoutes.get(PANEL_PATH);
+  check('路由注册成 exact + PANEL_PATH', panelRoute?.kind === 'exact' && panelRoute.path === PANEL_PATH);
+  check('面板实例一次挂上四条路由（面板 + 实时窗口三条）', panelRoutes.size === 4, [...panelRoutes.keys()].join(','));
+  const panelServer = createServer((request, response) => panelRoute.handler(request, response));
   await new Promise((r) => panelServer.listen(0, '127.0.0.1', r));
   const panelUrl = `http://127.0.0.1:${panelServer.address().port}${PANEL_PATH}`;
   const payload = await (await fetch(`${panelUrl}?lines=1`)).json();
@@ -281,7 +283,138 @@ try {
   check('非 GET 报 405', rejected.status === 405, `status=${rejected.status}`);
   await new Promise((r) => panelServer.close(r));
   disposePanel();
-  check('dispose 后路由被摘掉', route === null);
+  check('dispose 后路由被摘掉', panelRoutes.size === 0);
+
+  // ── 实时窗口：四条 exact 路由 + 回环/方法/同源三道闸门 ────────────────────
+  console.log('\nP4 实时窗口：路由与闸门');
+  const liveRoutes = new Map();
+  const liveActions = [];
+  const shown = { live: false, seq: 0, at: Date.now(), url: 'https://example.com/', title: '观测页', width: 800, height: 600, pageScaleFactor: 1 };
+  const stubView = {
+    async start() {
+      if (shown.live) return; // 真 LiveView.start() 是幂等的：重复取帧不该凭空多出画面
+      shown.live = true;
+      shown.seq += 1;
+      shown.at = Date.now();
+    },
+    async stop() {
+      shown.live = false;
+    },
+    async state() {
+      return { ...shown };
+    },
+    async waitFrame({ since = 0 } = {}) {
+      if (!shown.live || shown.seq <= since) return null;
+      return { seq: shown.seq, at: shown.at, jpeg: Buffer.from([0xff, 0xd8, 0xff, 0xd9]), width: shown.width, height: shown.height };
+    },
+    async input(action) {
+      liveActions.push(action);
+      if (action.kind === 'pow') throw new Error('实时窗口不支持的动作："pow"');
+      return { ok: true };
+    },
+  };
+  const liveProvider = {
+    liveTarget: () => 's1',
+    liveView: () => stubView,
+    openUrl: async (id, request) => {
+      liveActions.push({ kind: 'openUrl', id, url: request.url });
+      return 't1';
+    },
+  };
+  const quietLogger = { info() {}, warn() {}, error() {} };
+  const liveRoutesFor = (target) => ({
+    webServer: {
+      register: (entry) => {
+        target.set(entry.path, entry);
+        return () => target.delete(entry.path);
+      },
+    },
+    effect: () => {},
+    logger: quietLogger,
+  });
+  const disposeLive = registerPanel(liveRoutesFor(liveRoutes), { provider: liveProvider });
+  check(
+    '实时窗口注册四条 exact 路由',
+    liveRoutes.size === 4 && [PANEL_PATH, LIVE_STATE_PATH, LIVE_IMAGE_PATH, LIVE_INPUT_PATH].every((path) => liveRoutes.get(path)?.kind === 'exact'),
+    [...liveRoutes.keys()].join(','),
+  );
+
+  const liveServer = createServer((request, response) => {
+    const entry = liveRoutes.get(new URL(request.url, 'http://127.0.0.1').pathname);
+    if (!entry) {
+      response.writeHead(404);
+      response.end();
+      return;
+    }
+    entry.handler(request, response);
+  });
+  await new Promise((r) => liveServer.listen(0, '127.0.0.1', r));
+  const liveBase = `http://127.0.0.1:${liveServer.address().port}`;
+  const post = (body, extra = {}) => fetch(`${liveBase}${LIVE_INPUT_PATH}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(extra.headers ?? {}) },
+    body: JSON.stringify(body),
+  });
+
+  const stateBefore = await (await fetch(`${liveBase}${LIVE_STATE_PATH}`)).json();
+  check('live.json 报出会话与页面状态', stateBefore.session === 's1' && stateBefore.url === 'https://example.com/' && stateBefore.live === false, JSON.stringify(stateBefore));
+
+  const frameResponse = await fetch(`${liveBase}${LIVE_IMAGE_PATH}?since=0`);
+  const frameBytes = Buffer.from(await frameResponse.arrayBuffer());
+  check(
+    '取帧回 JPEG 且带帧序号与尺寸头',
+    frameResponse.status === 200 && frameResponse.headers.get('content-type') === 'image/jpeg' && frameResponse.headers.get('x-frame-seq') === '1' && frameResponse.headers.get('x-frame-w') === '800' && frameBytes.length === 4,
+    `status=${frameResponse.status} seq=${frameResponse.headers.get('x-frame-seq')} bytes=${frameBytes.length}`,
+  );
+  const stateAfter = await (await fetch(`${liveBase}${LIVE_STATE_PATH}`)).json();
+  check('推流开始后 live.json 变 live:true', stateAfter.live === true && stateAfter.seq === 1, JSON.stringify(stateAfter));
+
+  const stale = await fetch(`${liveBase}${LIVE_IMAGE_PATH}?since=1`);
+  await stale.arrayBuffer();
+  check('没有新帧时回 204（客户端不会收到重复画面）', stale.status === 204, `status=${stale.status}`);
+
+  const typed = await post({ kind: 'text', text: '实时窗口 ok' });
+  await typed.text();
+  check('打字转发给页面', typed.status === 200 && liveActions.some((a) => a.kind === 'text' && a.text === '实时窗口 ok'), JSON.stringify(liveActions.slice(-2)));
+
+  const clicked = await post({ kind: 'down', x: 12, y: 34, button: 'left' });
+  await clicked.text();
+  check('点击坐标原样转发', clicked.status === 200 && liveActions.some((a) => a.kind === 'down' && a.x === 12 && a.y === 34 && a.button === 'left'));
+
+  const jumped = await post({ kind: 'goto', url: 'https://example.com/next' });
+  await jumped.text();
+  check('地址栏跳转走 provider 的导航通道', jumped.status === 200 && liveActions.some((a) => a.kind === 'openUrl' && a.id === 's1' && a.url === 'https://example.com/next'), JSON.stringify(liveActions.slice(-2)));
+
+  const bad = await post({ kind: 'pow' });
+  await bad.text();
+  check('视图不认识的动作回 400', bad.status === 400, `status=${bad.status}`);
+
+  const crossSite = await post({ kind: 'text', text: 'x' }, { headers: { origin: 'http://evil.example' } });
+  await crossSite.text();
+  check('跨站 POST 被拒（403）', crossSite.status === 403, `status=${crossSite.status}`);
+
+  const wrongMethod = await fetch(`${liveBase}${LIVE_IMAGE_PATH}`, { method: 'POST' });
+  await wrongMethod.text();
+  check('取帧路由只收 GET（POST 回 405）', wrongMethod.status === 405, `status=${wrongMethod.status}`);
+
+  const outer = { code: 0, writeHead(code) { this.code = code; return this; }, end() {} };
+  liveRoutes.get(LIVE_STATE_PATH).handler({ socket: { remoteAddress: '10.0.0.9' }, method: 'GET', url: LIVE_STATE_PATH }, outer);
+  check('非本机来源被拒（403）', outer.code === 403, `code=${outer.code}`);
+
+  const stopped = await fetch(`${liveBase}${LIVE_INPUT_PATH}`, { method: 'DELETE' });
+  await stopped.json();
+  check('DELETE 停流（视图收到 stop）', stopped.status === 200 && shown.live === false, `live=${shown.live}`);
+
+  const bareRoutes = new Map();
+  const disposeBare = registerPanel(liveRoutesFor(bareRoutes));
+  const bareRes = { code: 0, writeHead(code) { this.code = code; return this; }, end() {} };
+  bareRoutes.get(LIVE_STATE_PATH).handler({ socket: { remoteAddress: '127.0.0.1' }, method: 'GET', url: LIVE_STATE_PATH }, bareRes);
+  check('没有 provider 时实时接口回 503', bareRes.code === 503, `code=${bareRes.code}`);
+  disposeBare();
+
+  await new Promise((r) => liveServer.close(r));
+  disposeLive();
+  check('dispose 后四条实时路由一起摘掉', liveRoutes.size === 0, [...liveRoutes.keys()].join(','));
 
   // ── 观测落盘不能把浏览器调用搞挂 ─────────────────────────────────────────
   console.log('\nP3 数据层：观测容错');

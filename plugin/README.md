@@ -16,8 +16,9 @@ browser_* 工具（33 个，来自依赖 dsh-builtin-browser 的 tool-browser）
 | `lib/compat.js` | 启动期探测：校验接缝导出面（`browser` 的函数默认导出 / `tool-browser` 的 `name`+`apply`+`inject`）、读宿主与接缝版本，不符时打一句人话并安静退出 |
 | `lib/provider.js` | `BrowserProvider` 全部成员（seam 契约见 `dsh-builtin-browser/lib/browser/types.d.ts`）；含默认自启 `defaultAutoStartCommand()` |
 | `lib/dom.js` | 页面内取快照 / a11y / 表单操作注入的脚本（含 checked 状态、代理对安全截断） |
-| `lib/panel.js` | 网页面板的**宿主半边**：只读路由 `GET /browser-service/panel.json`（`exact`、只 GET/HEAD、`no-store`、载荷不含绝对路径），经 `ctx.inject(['webServer'], …)` 挂载 |
-| `client.js` | 网页面板的**客户端半边**：手写零构建，走 `window.__ModuleLoader__` 协议、只 `require('react')`，`apply` 注册到 `shell.overlay` |
+| `lib/panel.js` | 网页面板的**宿主半边**：四条 `exact` 路由（只读 `panel.json` + 实时窗口 `live.jpg`/`live.json`/`live`）与三道闸（回环地址、方法白名单、POST/DELETE 同源），经 `ctx.inject(['webServer'], …)` 挂载；载荷不含绝对路径 |
+| `lib/liveview.mjs` | 实时窗口（P4）：`Page.startScreencast` 取 JPEG 帧（只在画面变化时下发、逐帧 ack）、`waitFrame({since})` 长轮询、`Input.*` 把点击/滚动/打字/按键打回真页面；CDP 会话懒建，空闲 30 s 自动停流 |
+| `client.js` | 网页面板的**客户端半边**：手写零构建，走 `window.__ModuleLoader__` 协议、只 `require('react')`，`apply` 注册到 `shell.overlay`（四标签，默认「网页」帧流 + 日志三视图） |
 | `shims/browser.js` | `export * from 'dsh-builtin-browser/browser'`（含 default）：把接缝挂进 profile |
 | `shims/tool-browser.js` | `export * from 'dsh-builtin-browser/tool-browser'`（**源模块没有 default**）：挂 33 个工具 |
 | `cordis.patch.yml` | bundle patch：`insert` 接缝 `browser`（选 `cdp-daemon`）、`tool-browser`、`browser-cdp` provider |
@@ -35,8 +36,8 @@ browser_* 工具（33 个，来自依赖 dsh-builtin-browser 的 tool-browser）
 ## 验证
 
 - 插件行为：`node scripts/verify-provider.mjs`（110 项零依赖，真实 `browsersvc` + 本地站点）。
-- 组合包安装路径（官方 `dsh plugin` 流程）：`node scripts/verify-bundle.mjs`（40 项，一次性隔离 `DSH_HOME`；含启动期探测的四类坏形状、工具面静态计数与客户端半边 5c 段）。
-- 观测面与面板：`node scripts/verify-data.mjs`（45 项，真实 `browsersvc` + 本地站点；ops/console/network/har/cookies + `panel.json` 路由）。
+- 组合包安装路径（官方 `dsh plugin` 流程）：`node scripts/verify-bundle.mjs`（41 项，一次性隔离 `DSH_HOME`；含启动期探测的四类坏形状、工具面静态计数与客户端半边 5c 段）。
+- 观测面与实时窗口：`node scripts/verify-data.mjs`（61 项，真实 `browsersvc` + 本地站点；ops/console/network/har/cookies + `panel.json` 路由 + P4 四条 live 路由与三道闸）。
 - 守护进程与 CLI：`node scripts/verify-daemon.mjs`（35 项）。
 - DSH 版本矩阵：`node scripts/verify-matrix.mjs --dsh <bin> … --smoke`（4 个宿主版本 × 12 项）。
 

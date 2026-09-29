@@ -1,9 +1,26 @@
 # 更新记录
 
-本文件记录每个版本的变更与**真实缺陷编号**（F = 代码审查/上线验证发现的缺陷，P = 专项（P1 资源/性能 0.5.0、P2 DSH 版本适配 0.5.1、P3 可观测性与交互 0.6.0），B = 按官方打包文档核对发现的问题，U = v0.4.0 合并交付物的改动，P1 见 v0.5.0，F26 见 v0.4.0）。
+本文件记录每个版本的变更与**真实缺陷编号**（F = 代码审查/上线验证发现的缺陷，P = 专项（P1 资源/性能 0.5.0、P2 DSH 版本适配 0.5.1、P3 可观测性与交互 0.6.0、P4 实时交互网页窗口 0.7.0），B = 按官方打包文档核对发现的问题，U = v0.4.0 合并交付物的改动，P1 见 v0.5.0，F26 见 v0.4.0）。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-验收计数随版本推进：`verify-daemon` 13 → 26 → 31 → 32 → **35**，`verify-provider` 67 → 77 → 83 → 86 → 88 → 95 → **110**，`verify-bundle` 16 → 23 → 33 → **40**，`verify-data` 首次引入（**45**），`verify-matrix` 首次引入（4 个宿主版本 × 12 项）。
+验收计数随版本推进：`verify-daemon` 13 → 26 → 31 → 32 → **35**，`verify-provider` 67 → 77 → 83 → 86 → 88 → 95 → **110**，`verify-bundle` 16 → 23 → 33 → 40 → **41**，`verify-data` 45 → **61**，`verify-matrix` 4 个宿主版本 × 12 项。
+
+## [0.7.0] — 2026-09-29
+
+起因：用户要的不是「日志看板」，而是**在 DSH 网页里能看到并直接操作的实时网页窗口**（像 dsh-univer-office 的浮动实时窗口，只是内容换成网页）。约束不变：33 个 `browser_*` 工具是内置接缝的，**零新增工具**——实时窗口是网页面板里的第一个标签页。
+
+| # | 项 | 影响 | 处理 |
+| --- | --- | --- | --- |
+| P4-1 | 面板只能「看日志」，不能在窗口里操作页面 | 想点一下、滚一下、输入一段文字都得回到对话里发指令 | 新增 `plugin/lib/liveview.mjs`：包住会话当前页，用 `Page.startScreencast`（jpeg/quality 70/1280×800）经我们的 CDP 代理取帧——**只在画面变化时下发**（静止零流量，实测帧约 6.8 KB、滚动动画期 13.8 fps）——并用 `Input.dispatchMouseEvent`/`insertText`/`dispatchKeyEvent`/`mouseWheel` 把操作打回真页面。CDP 会话懒建（`#session()` 幂等），不开流也能先转操作 |
+| P4-2 | 画面怎么送到浏览器端、操作怎么回来 | —— | `plugin/lib/panel.js` 增加三条 exact 路由（与面板同源）：`GET /browser-service/live.jpg?since=N`（长轮询，最多等 1500ms，只回比 `since` 新的帧，无帧回 204）、`GET /browser-service/live.json`（每秒同步 URL/标题/推流状态）、`POST /browser-service/live`（`down/up/move/wheel/text/key/reload` → `view.input()`；`goto` → `provider.openUrl()`，复用 http(s) 校验与 ops 记账）、`DELETE` 停流 |
+| P4-3 | 谁能碰这条通道 | 实时窗口能点能打字，等于把浏览器交出去 | 三道闸：只认**回环地址**（非本机 403）、方法白名单（405）、POST/DELETE 要求 `origin`/`referer` 与 Host 同源（跨站 403；回环来的无 origin 请求放行，便于 curl 与验收） |
+| P4-4 | 录屏一直开着会白烧 CPU | 面板收起/切走后没人看画面 | 宿主半边记录最近取帧时间，`setInterval` 5 秒巡检、30 秒没取帧就停流（`unref` 不阻塞退出）；客户端在收起/暂停/卸载时发 `DELETE`；provider 在会话关闭、`reset`、切标签、`#revive` 时都把 `live` 停掉并置空 |
+| P4-5 | 客户端半边要能在浏览器里真的跑 | 手写 bundle 协议 + 9 个平台种子词容易被写错 | 面板客户端加「网页」标签（默认）：长轮询取帧 → `URL.createObjectURL` → `<img>`（换帧时 revoke 旧 URL）、鼠标/滚轮/键盘事件按 `屏幕 rect → 帧宽高` 线性换算坐标后转发（**不猜坐标**）、地址栏回车走 `goto`、`live.json` 每秒同步地址栏；`Panel` 默认标签改成「网页」 |
+
+- 验收：`scripts/verify-data.mjs` 45 → **61**：新增「P4 实时窗口：路由与闸门」15 项（四条 exact 路由、`live.json` 报会话与页面状态、取帧回 JPEG 且带 `x-frame-seq`/`x-frame-w`/`x-frame-h`、推流后状态变 `live:true`、无新帧回 204、打字/点击坐标/goto 转发、未知动作 400、跨站 POST 403、非本机 403、方法 405、DELETE 停流、无 provider 503、dispose 一起摘掉），面板段另加 1 项「一次挂上四条路由」。
+- `scripts/verify-bundle.mjs` 40 → **41**（5c 段补 1 项：客户端引用的三条实时路由与服务端一字不差——服务端是 `exact` 匹配，写错只会静默 404）。
+- 已知限制：实时窗口**只对本机回环请求开放**。若你是从别的机器直连 DSH Web（不是本机 127.0.0.1），面板的日志标签照常，但实时窗口会 403——这是刻意保留的闸门，宁可拦住也不把浏览器交出去。跨站网页仍然只能帧流（不能 iframe 嵌），与 dsh-univer-office 同路子。
+- 面板要在 DSH 里**重启一次**才会出现（客户端插件在启动时收集）；改 `plugin/client.js` 不必重启（客户端入口支持热替换），改宿主半边要重启。
 
 ## [0.6.0] — 2026-09-28
 

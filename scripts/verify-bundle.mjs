@@ -256,6 +256,8 @@ console.log('5c. 客户端半边（网页面板）');
     c.injected === 'shell.overlay' && c.register?.name === 'shell.overlay' && typeof c.register?.id === 'string',
     JSON.stringify({ injected: c.injected, register: c.register }));
   check('看板组件能渲染（没有数据时回落胶囊）', c.render === 'null', String(c.render));
+  check('客户端半边引用实时窗口的三条路由（与服务端一字不差）',
+    (c.liveRoutes ?? []).length === 3, JSON.stringify(c.liveRoutes));
   const seeds = new Set([
     'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client',
     '@deepseek-ai/cordis', '@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-client-ui-slots',
