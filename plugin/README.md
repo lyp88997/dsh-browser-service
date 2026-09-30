@@ -35,9 +35,10 @@ browser_* 工具（33 个，来自依赖 dsh-builtin-browser 的 tool-browser）
 
 ## 验证
 
-- 插件行为：`node scripts/verify-provider.mjs`（110 项零依赖，真实 `browsersvc` + 本地站点）。
-- 组合包安装路径（官方 `dsh plugin` 流程）：`node scripts/verify-bundle.mjs`（44 项，一次性隔离 `DSH_HOME`；含启动期探测的四类坏形状、工具面静态计数与客户端半边 5c 段 11 项）。
-- 观测面与实时窗口：`node scripts/verify-data.mjs`（66 项，真实 `browsersvc` + 本地站点；ops/console/network/har/cookies + `panel.json` 路由 + P4/P5 四条 live 路由与三道闸、取帧参数透传与夹取、只读服务信息块）。
+- 插件行为：`node scripts/verify-provider.mjs`（116 项零依赖，真实 `browsersvc` + 本地站点；含 P7 的窗口分辨率 `setViewport`）。
+- 随包全局技能（v0.8.1）：`node scripts/verify-bundle.mjs` 第 6 段（8 项）+ 手查 `node bin/browsersvc.mjs skills [--install] [--dir=…]`。
+- 组合包安装路径（官方 `dsh plugin` 流程）：`node scripts/verify-bundle.mjs`（61 项，一次性隔离 `DSH_HOME`；含启动期探测的四类坏形状、工具面静态计数与客户端半边 5c 段 19 项，含 P7 的写路由引用、面板间距夹取、新设置键与胶囊自定偏移，P8 的外观 CSS 变量与颜色规整；第 6 段的随包全局技能 8 项与 tarball 技能文件断言）。
+- 观测面与实时窗口：`node scripts/verify-data.mjs`（86 项，真实 `browsersvc` + 本地站点；ops/console/network/har/cookies + `panel.json` 路由 + P4/P5 四条 live 路由与三道闸、取帧参数透传与夹取、只读服务信息块、P6 日志清理与无会话跳转自动开页、P7 分辨率写路由与夹取/非法值/三道闸）。
 - 守护进程与 CLI：`node scripts/verify-daemon.mjs`（35 项）。
 - DSH 版本矩阵：`node scripts/verify-matrix.mjs --dsh <bin> … --smoke`（4 个宿主版本 × 12 项）。
 

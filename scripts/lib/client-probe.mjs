@@ -76,6 +76,7 @@ if (spec) {
         oversize: inner.clampRect({ x: 9999, y: 9999, w: 9999, h: 9999 }, { w: 800, h: 600 }),
         undersize: inner.clampRect({ x: -50, y: -50, w: 10, h: 10 }, { w: 800, h: 600 }),
         anchored: inner.clampRect({ x: null, y: null, w: 400, h: 300 }, { w: 800, h: 600 }),
+        margin: inner.clampRect({ x: 9999, y: 9999, w: 9999, h: 9999 }, { w: 800, h: 600 }, 10),
       };
     }
     if (typeof inner?.normalizeSettings === 'function') {
@@ -87,6 +88,44 @@ if (spec) {
         lines: normalized.lines,
         tab: normalized.tab,
         autoStream: normalized.autoStream,
+        pillPos: normalized.pillPos,
+        autoClean: normalized.autoClean,
+        viewport: normalized.viewport,
+        pillX: normalized.pillX,
+        pillY: normalized.pillY,
+        panelGap: normalized.panelGap,
+        zBase: normalized.zBase,
+        borderColor: normalized.borderColor,
+        cardAlpha: normalized.cardAlpha,
+        glass: normalized.glass,
+      };
+      // 越界的像素量必须被拉回范围（不然 localStorage 里一个脏值就能让胶囊飞出屏幕）。
+      const dirty = inner.normalizeSettings({ pillX: -20, pillY: 9999, panelGap: -5, zBase: 0, viewport: '640x480' });
+      out.settingsClamp = { pillX: dirty.pillX, pillY: dirty.pillY, panelGap: dirty.panelGap, zBase: dirty.zBase, viewport: dirty.viewport };
+      // 外观三件套的规整：颜色只认「主题/无/6 位十六进制」，不透明度夹到可读范围，未知玻璃档回落。
+      const look = inner.normalizeSettings({ borderColor: 'javascript:alert(1)', cardAlpha: 0, glass: 123 });
+      out.appearanceClamp = { borderColor: look.borderColor, cardAlpha: look.cardAlpha, glass: look.glass };
+      out.appearanceCustom = inner.normalizeSettings({ borderColor: '#AABBCC' }).borderColor;
+    }
+    if (typeof inner?.appearanceStyle === 'function') {
+      out.appear = {
+        liquid: inner.appearanceStyle({ borderColor: '#AABBCC', cardAlpha: 60, glass: 'liquid' }, 'card'),
+        plain: inner.appearanceStyle({ borderColor: 'none', cardAlpha: 100, glass: 'none' }, 'pill'),
+      };
+    }
+    if (typeof inner?.pillAnchor === 'function') {
+      out.pill = {
+        lt: inner.pillAnchor('lt'),
+        rb: inner.pillAnchor('rb'),
+        custom: inner.pillAnchor('rt', 30, 60),
+        bad: inner.pillAnchor('nope'),
+      };
+    }
+    if (typeof inner?.withScheme === 'function') {
+      out.scheme = {
+        bare: inner.withScheme('example.com'),
+        full: inner.withScheme('http://a'),
+        empty: inner.withScheme('   '),
       };
     }
   } catch (error) {
@@ -101,6 +140,8 @@ const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*
 out.requires = [...new Set((code.match(/require\(['"]([^'"]+)['"]\)/g) ?? []).map((hit) => hit.replace(/^require\(['"]/, '').replace(/['"]\)$/, '')))];
 // 实时窗口的三条路由必须与服务端一字不差（服务端路由是 exact 匹配，写错了只会静默 404）。
 out.liveRoutes = ['/browser-service/live.jpg', '/browser-service/live.json', '/browser-service/live'].filter((path) => code.includes(`'${path}'`));
+// 两条写路由（清日志 / 改分辨率）同理。
+out.writeRoutes = ['/browser-service/logs', '/browser-service/viewport'].filter((path) => code.includes(`'${path}'`));
 out.pkgName = pkgName;
 
 console.log(JSON.stringify(out));

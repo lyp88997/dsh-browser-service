@@ -8,17 +8,21 @@
  *   1. 只认回环地址（127.0.0.1 / ::1）—— 远端一律 403；
  *   2. POST/DELETE 要求 Origin/Referer 与本机 Host 同源（浏览器必带 Origin，跨站请求挡在门外）；
  *   3. 请求体上限 64 KB，动作按白名单转发。
+ * `/browser-service/logs`（POST）同样只对本机同源开放：它删观测日志，属于写操作。
+ * `/browser-service/viewport`（POST）改浏览器窗口分辨率，也是写操作，同样只对本机同源开放。
  * 客户端半边（`plugin/client.js`）轮询这些路由，把画面显示成浮动窗口。
  */
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
-import { readConsole, readNetwork, readOps } from '../../src/opslog.mjs';
+import { LOG_KINDS, clearEntries, readConsole, readNetwork, readOps } from '../../src/opslog.mjs';
 import { defaultRoot } from '../../src/config.mjs';
 
 export const PANEL_PATH = '/browser-service/panel.json';
 export const LIVE_IMAGE_PATH = '/browser-service/live.jpg';
 export const LIVE_STATE_PATH = '/browser-service/live.json';
 export const LIVE_INPUT_PATH = '/browser-service/live';
+export const LOGS_PATH = '/browser-service/logs';
+export const VIEWPORT_PATH = '/browser-service/viewport';
 
 /** 自身版本号：面板「设置」区显示用（读自己的 package.json，读不到就留空）。 */
 const PACKAGE_VERSION = (() => {
@@ -59,6 +63,17 @@ function linesOf(reqUrl) {
 
 function describe(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * 地址栏输入的规整：没有协议就按 https 补（用户只会打 `example.com`）。
+ * 已经有协议的（`file:`、`javascript:` 之类）原样交给 provider 的 http(s) 白名单去挡。
+ */
+function normalizeUrl(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) throw new Error('请先输入网址');
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(text)) return `https://${text}`;
+  return text;
 }
 
 function json(res, code, payload, extra = {}) {
@@ -142,6 +157,7 @@ export function panelPayload({ root = defaultRoot(), lines = DEFAULT_LINES, serv
       captureConsole: service.captureConsole !== false,
       captureNetwork: service.captureNetwork !== false,
       live: service.live ?? null,
+      viewport: service.viewport ?? null,
     },
     ops: shape(readOps({ root, lines })),
     console: shape(readConsole({ root, lines })),
@@ -181,6 +197,7 @@ export function registerPanel(ctx, { provider, config } = {}) {
       captureConsole: config?.captureConsole,
       captureNetwork: config?.captureNetwork,
       live: view?.options ?? null,
+      viewport: typeof provider?.viewport === 'function' ? provider.viewport() : null,
     };
   };
 
@@ -220,7 +237,7 @@ export function registerPanel(ctx, { provider, config } = {}) {
         width: 0,
         height: 0,
         session: null,
-        reason: '当前没有可用的浏览器会话 —— 先让助手打开一个页面',
+        reason: '当前没有打开的页面 —— 在上面的地址栏输入网址并点「跳转」即可打开',
       });
       return;
     }
@@ -310,18 +327,93 @@ export function registerPanel(ctx, { provider, config } = {}) {
     }
     const id = targetId();
     const view = viewFor(id);
+    if (String(action.kind ?? '') === 'goto') {
+      let url;
+      try {
+        url = normalizeUrl(action.url);
+      } catch (error) {
+        json(res, 400, { error: describe(error) });
+        return;
+      }
+      try {
+        // 地址栏的语义就是「打开这个网址」：一个会话都没有时顺手开一个（等价于 browser_open）
+        // 再导航，而不是回 409 让用户先去别处把页面开好。
+        let target = id;
+        if (!view) target = await provider.open('面板地址栏');
+        // 复用 provider 的导航通道：http(s) 校验与 ops 记账都在那里。
+        await provider.openUrl(target, { url });
+        json(res, 200, { ok: true, url, session: target, opened: !view });
+      } catch (error) {
+        json(res, 400, { error: describe(error) });
+      }
+      return;
+    }
     if (!view) {
-      json(res, 409, { error: '当前没有可用的浏览器会话 —— 先打开一个页面' });
+      json(res, 409, { error: '当前没有打开的页面 —— 在上面的地址栏输入网址并点「跳转」即可打开' });
       return;
     }
     try {
-      if (String(action.kind ?? '') === 'goto') {
-        // 地址栏跳转走 provider 的导航通道：复用 http(s) 校验与 ops 记账。
-        await provider.openUrl(id, { url: action.url });
-        json(res, 200, { ok: true, url: String(action.url ?? '') });
-        return;
-      }
       json(res, 200, await view.input(action));
+    } catch (error) {
+      json(res, 400, { error: describe(error) });
+    }
+  };
+
+  /** logs：手动「清理」与设置里的「自动清理」共用这一条（只认 POST + 同源 + 回环）。 */
+  const logsHandler = async (req, res) => {
+    if (!sameOrigin(req)) {
+      json(res, 403, { error: '跨站请求被拒绝（清理日志只接受同源请求）' });
+      return;
+    }
+    let body;
+    try {
+      body = await readJson(req);
+    } catch (error) {
+      json(res, 400, { error: describe(error) });
+      return;
+    }
+    const action = String(body.action ?? 'clear') === 'trim' ? 'trim' : 'clear';
+    const wanted = String(body.kind ?? 'all');
+    const kinds = wanted === 'all' ? Object.keys(LOG_KINDS) : [wanted];
+    const unknown = kinds.filter((kind) => !LOG_KINDS[kind]);
+    if (unknown.length) {
+      json(res, 400, { error: `未知的日志类型：${unknown.join('、')}` });
+      return;
+    }
+    // clear = 清空；trim = 保留最近 keep 条（keep 缺省 0，等于清空）。
+    const keep = action === 'trim' ? Math.max(0, Math.floor(Number(body.keep)) || 0) : 0;
+    try {
+      const result = {};
+      for (const kind of kinds) result[kind] = clearEntries(kind, { root: defaultRoot(), keep });
+      json(res, 200, { ok: true, action, keep, result });
+    } catch (error) {
+      json(res, 500, { error: describe(error) });
+    }
+  };
+
+  /**
+   * viewport：改浏览器窗口分辨率（面板「设置 → 分辨率」）。只认 POST + 同源 + 回环；
+   * 具体夹取与「现页立即生效 + 记住给新会话」都在 provider.setViewport 里（单一事实源）。
+   */
+  const viewportHandler = async (req, res) => {
+    if (!sameOrigin(req)) {
+      json(res, 403, { error: '跨站请求被拒绝（改分辨率只接受同源请求）' });
+      return;
+    }
+    if (!provider || typeof provider.setViewport !== 'function') {
+      json(res, 503, { error: '当前没有可用的浏览器 provider' });
+      return;
+    }
+    let body;
+    try {
+      body = await readJson(req);
+    } catch (error) {
+      json(res, 400, { error: describe(error) });
+      return;
+    }
+    try {
+      const applied = await provider.setViewport({ width: body.width, height: body.height });
+      json(res, 200, { ok: true, viewport: applied, at: Date.now() });
     } catch (error) {
       json(res, 400, { error: describe(error) });
     }
@@ -351,6 +443,8 @@ export function registerPanel(ctx, { provider, config } = {}) {
     { path: LIVE_STATE_PATH, handler: guarded(liveStateHandler, ['GET', 'HEAD']) },
     { path: LIVE_IMAGE_PATH, handler: guarded(liveImageHandler, ['GET', 'HEAD']) },
     { path: LIVE_INPUT_PATH, handler: guarded(liveInputHandler, ['POST', 'DELETE']) },
+    { path: LOGS_PATH, handler: guarded(logsHandler, ['POST']) },
+    { path: VIEWPORT_PATH, handler: guarded(viewportHandler, ['POST']) },
   ];
 
   const disposers = routes.map(({ path, handler }) => ctx.webServer.register({ kind: 'exact', path, handler }));

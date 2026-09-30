@@ -11,9 +11,9 @@
  */
 
 /** 一帧 JPEG 的质量与尺寸上限：够看清，又不至于每帧几十 KB（客户端可在设置里调）。 */
-const QUALITY = 70;
+const QUALITY = 85;
 const MAX_WIDTH = 1280;
-const MAX_HEIGHT = 800;
+const MAX_HEIGHT = 1200;
 
 /** 设置区能调的边界：越界一律夹住，坏值回落默认，免得把浏览器坑死。 */
 const QUALITY_MIN = 10;
@@ -23,7 +23,13 @@ const WIDTH_MAX = 1920;
 const HEIGHT_MIN = 240;
 const HEIGHT_MAX = 1200;
 
+/**
+ * 整数夹取：**没给**（null/undefined/空串）就用 fallback，给了才夹边界。
+ * 注意 `Number(null) === 0` —— 早先没挡这一条，导致「只带 max、不带 maxh」的请求
+ * 把 maxHeight 从 240 的下限算起（画面被压到 1/4 高，糊成一片）。
+ */
 function clampInt(value, min, max, fallback) {
+  if (value == null || value === '') return fallback;
   const raw = Number(value);
   if (!Number.isFinite(raw)) return fallback;
   return Math.min(max, Math.max(min, Math.floor(raw)));

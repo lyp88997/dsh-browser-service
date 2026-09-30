@@ -5,10 +5,12 @@
  * 由本包的依赖 dsh-builtin-browser 提供，经本包 ./browser、./tool-browser 转出后由 bundle patch 挂上。
  */
 import { exec } from 'node:child_process';
+import { resolve } from 'node:path';
 import Schema from '@deepseek-ai/schemastery';
 import { createProvider } from './provider.js';
-import { LIVE_STATE_PATH, PANEL_PATH, registerPanel } from './panel.js';
+import { LIVE_STATE_PATH, LOGS_PATH, PANEL_PATH, VIEWPORT_PATH, registerPanel } from './panel.js';
 import { SEAM_PACKAGE, TESTED_HOSTS, inspectSeam, readVersions, seamMismatchMessage } from './compat.js';
+import { PACKAGE_VERSION, defaultSkillsRoot, syncSkills } from '../../src/skills.mjs';
 
 export const name = 'browser-cdp';
 
@@ -69,6 +71,16 @@ export const Config = Schema.object({
    */
   cdpToken: Schema.string(),
   /**
+   * 目标技能根目录（本包随附的全局技能 `browser` / `browser-runtime` 会同步到这里）。
+   * 默认 `$DSH_HOME/skills`，即 DSH 的用户级技能目录（rank 400，仅次于 bundled）。
+   */
+  skillsDir: Schema.string().default(''),
+  /**
+   * 是否在插件启动时把随包技能同步进 `skillsDir`（默认开）。同步带归属台账：只覆盖本包写过
+   * 且之后没人动过的文件，用户改过的或同名非本包的技能一律跳过并记一行日志。
+   */
+  syncSkills: Schema.boolean().default(true),
+  /**
    * 可选：截图/下载落盘的目录边界。不配置时取系统 Downloads 目录（`XDG_DOWNLOAD_DIR` → 家目录下
    * 存在的 `Downloads`/`下载`/`下載` → `~/Downloads`），与内置 provider 同语义。
    */
@@ -86,6 +98,30 @@ function runCommand(command, timeoutMs) {
 }
 
 export async function apply(ctx, config) {
+  // 随包全局技能：DSH 的技能发现只认磁盘目录（`$DSH_HOME/skills` 等），package.json 的 dsh 清单里
+  // 没有技能位 ⇒ 想让「装完就有全局技能」只能把随包 skills/ 落到技能根目录。带归属台账，用户改过的
+  // 文件一律不动；这一步失败也只记日志，绝不影响下面的 provider。
+  if (config.syncSkills !== false) {
+    try {
+      const root = config.skillsDir ? resolve(config.skillsDir) : defaultSkillsRoot();
+      const result = syncSkills({ root, version: PACKAGE_VERSION });
+      if (result.installed.length > 0 || result.updated.length > 0) {
+        ctx.logger?.info?.(
+          `browser-cdp: 随包全局技能已同步到 ${root}（装 ${result.installed.length}、升级 ${result.updated.length}，本包 ${PACKAGE_VERSION}）`,
+        );
+      }
+      if (result.skipped.length > 0 || result.errors.length > 0) {
+        const detail = [
+          ...result.skipped.map((item) => `${item.path} 跳过（${item.reason}）`),
+          ...result.errors,
+        ].join('；');
+        ctx.logger?.warn?.(`browser-cdp: 随包技能没有全部落盘 —— ${detail}。要覆盖用 browsersvc skills --install --force`);
+      }
+    } catch (error) {
+      ctx.logger?.warn?.(`browser-cdp: 随包技能同步失败（不影响 provider）：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   // 启动期能力探测：先把「接缝还在不在、形状对不对」说清楚，再谈 provider。
   const versions = readVersions();
   let seamBrowser;
@@ -148,7 +184,9 @@ export async function apply(ctx, config) {
   }
   ctx.inject(['webServer'], (webCtx) => {
     const dispose = registerPanel(webCtx, { provider, config });
-    webCtx.effect(() => () => dispose(), 'browser-cdp: read-only panel route + live view routes');
-    webCtx.logger?.info?.(`browser-cdp: 面板数据路由已挂到 ${PANEL_PATH}（实时窗口：${LIVE_STATE_PATH}）`);
+    webCtx.effect(() => () => dispose(), 'browser-cdp: panel routes (read-only + live view + logs/viewport writes)');
+    webCtx.logger?.info?.(
+      `browser-cdp: 面板数据路由已挂到 ${PANEL_PATH}（实时窗口：${LIVE_STATE_PATH}；写操作：${LOGS_PATH}、${VIEWPORT_PATH}）`,
+    );
   });
 }

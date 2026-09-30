@@ -506,6 +506,56 @@ try {
   }
 }
 
+// ── P7：窗口分辨率可调（面板「设置 → 分辨率」的宿主半边）─────────────────────
+// 真内核里验证三件事：配置给的初值生效、改分辨率对**已开页面**立即生效、并且**记住**给
+// 之后新建的会话用（不然「改了设置但新开的会话又回到旧尺寸」）。越界/非法值走夹取与报错。
+{
+  console.log('\nP7 窗口分辨率 setViewport');
+  const vpProvider = createProvider({
+    chromium: (await import('playwright-core')).chromium,
+    config: {
+      providerId: 'cdp-daemon',
+      cdpUrl: `http://127.0.0.1:${PORT}`,
+      connectTimeoutMs: 10_000,
+      actionTimeoutMs: 15_000,
+      navigationTimeoutMs: 15_000,
+      lookupTimeoutMs: 5_000,
+      viewportWidth: 900,
+      viewportHeight: 600,
+      maxTabs: 3,
+      downloadDir: root,
+    },
+  });
+  try {
+    check('viewport() 报出配置里的初值', vpProvider.viewport().width === 900 && vpProvider.viewport().height === 600,
+      JSON.stringify(vpProvider.viewport()));
+    const vpSession = await vpProvider.open('viewport');
+    await vpProvider.openUrl(vpSession, { url: `${BASE}/` });
+    const before = await vpProvider.execute(vpSession, { script: '[window.innerWidth, window.innerHeight]' });
+    check('新页面按配置的分辨率打开', before.ok === true && before.value?.[0] === 900 && before.value?.[1] === 600,
+      JSON.stringify(before.value ?? before));
+    const applied = await vpProvider.setViewport({ width: 1280, height: 720 });
+    const after = await vpProvider.execute(vpSession, { script: '[window.innerWidth, window.innerHeight]' });
+    check('改分辨率立刻作用到已打开的页面',
+      applied.width === 1280 && applied.height === 720 && applied.applied === 1
+      && after.value?.[0] === 1280 && after.value?.[1] === 720,
+      JSON.stringify({ applied, inner: after.value }));
+    const vpNext = await vpProvider.open('viewport-next');
+    await vpProvider.openUrl(vpNext, { url: `${BASE}/next` });
+    const nextInner = await vpProvider.execute(vpNext, { script: 'window.innerWidth' });
+    check('新会话沿用改过的分辨率（设置被记住）', nextInner.value === 1280, JSON.stringify(nextInner.value));
+    const clamped = await vpProvider.setViewport({ width: 10, height: 10 });
+    check('越界分辨率被夹到下限 640×360', clamped.width === 640 && clamped.height === 360, JSON.stringify(clamped));
+    await expectCode('非法分辨率报 BROWSER_VIEWPORT_INVALID', 'BROWSER_VIEWPORT_INVALID', () => vpProvider.setViewport({ width: 'x' }));
+    await vpProvider.close(vpSession);
+    await vpProvider.close(vpNext);
+  } catch (error) {
+    check(`分辨率段未抛异常：${error?.message}`, false, error?.stack?.split('\n').slice(0, 2).join(' | '));
+  } finally {
+    await vpProvider.dispose();
+  }
+}
+
 // ── P1：最后一个会话关闭后主动断开连接 ⇒ 守护进程能按 idleMs 回收 ────────────
 // 守护进程只在「代理端口上没有任何客户端连接」时才可能空闲自杀（src/daemon.mjs:241）。插件过去
 // 一直挂着那条 CDP WebSocket，所以约 600 MB 的常驻浏览器永不回收。这里用第二个短 idle 的守护

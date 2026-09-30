@@ -18,8 +18,8 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { appendOp, readOps } from '../src/opslog.mjs';
-import { LIVE_IMAGE_PATH, LIVE_INPUT_PATH, LIVE_STATE_PATH, PANEL_PATH, registerPanel } from '../plugin/lib/panel.js';
+import { appendNetwork, appendOp, readNetwork, readOps } from '../src/opslog.mjs';
+import { LIVE_IMAGE_PATH, LIVE_INPUT_PATH, LIVE_STATE_PATH, LOGS_PATH, PANEL_PATH, VIEWPORT_PATH, registerPanel } from '../plugin/lib/panel.js';
 import { createProvider } from '../plugin/lib/provider.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -269,7 +269,7 @@ try {
   const disposePanel = registerPanel(fakeCtx);
   const panelRoute = panelRoutes.get(PANEL_PATH);
   check('路由注册成 exact + PANEL_PATH', panelRoute?.kind === 'exact' && panelRoute.path === PANEL_PATH);
-  check('面板实例一次挂上四条路由（面板 + 实时窗口三条）', panelRoutes.size === 4, [...panelRoutes.keys()].join(','));
+  check('面板实例一次挂上六条路由（面板 + 实时窗口三条 + 日志清理 + 分辨率）', panelRoutes.size === 6, [...panelRoutes.keys()].join(','));
   const panelServer = createServer((request, response) => panelRoute.handler(request, response));
   await new Promise((r) => panelServer.listen(0, '127.0.0.1', r));
   const panelUrl = `http://127.0.0.1:${panelServer.address().port}${PANEL_PATH}`;
@@ -291,8 +291,10 @@ try {
   const liveActions = [];
   const shown = { live: false, seq: 0, at: Date.now(), url: 'https://example.com/', title: '观测页', width: 800, height: 600, pageScaleFactor: 1 };
   // 模仿真 LiveView 的取帧参数语义：按边界夹取、缺字段沿用当前值（真实现是 resolveStreamOptions）。
-  const liveStream = { quality: 70, maxWidth: 1280, maxHeight: 800 };
+  const liveStream = { quality: 85, maxWidth: 1280, maxHeight: 1200 };
   const clampInt = (value, min, max, fallback) => {
+    // 与宿主同一条：没给（null/''）就用 fallback —— `Number(null) === 0` 会把高度塌到下限。
+    if (value == null || value === '') return fallback;
     const raw = Number(value);
     if (!Number.isFinite(raw)) return fallback;
     return Math.min(max, Math.max(min, Math.floor(raw)));
@@ -359,8 +361,8 @@ try {
     },
   });
   check(
-    '实时窗口注册四条 exact 路由',
-    liveRoutes.size === 4 && [PANEL_PATH, LIVE_STATE_PATH, LIVE_IMAGE_PATH, LIVE_INPUT_PATH].every((path) => liveRoutes.get(path)?.kind === 'exact'),
+    '实时窗口注册六条 exact 路由（面板 + 实时三条 + 日志清理 + 分辨率）',
+    liveRoutes.size === 6 && [PANEL_PATH, LIVE_STATE_PATH, LIVE_IMAGE_PATH, LIVE_INPUT_PATH, LOGS_PATH, VIEWPORT_PATH].every((path) => liveRoutes.get(path)?.kind === 'exact'),
     [...liveRoutes.keys()].join(','),
   );
 
@@ -406,6 +408,13 @@ try {
     '画质与最大边按查询串透传给取帧',
     tuned.status === 200 && tuned.headers.get('x-frame-quality') === '85' && tuned.headers.get('x-frame-max') === '800x600',
     `quality=${tuned.headers.get('x-frame-quality')} max=${tuned.headers.get('x-frame-max')}`,
+  );
+  const bare = await fetch(`${liveBase}${LIVE_IMAGE_PATH}?since=0&quality=85&max=1280`);
+  await bare.arrayBuffer();
+  check(
+    '缺 maxh 时沿用当前高度，不塌到下限 240（画面糊的根源）',
+    bare.status === 200 && bare.headers.get('x-frame-max') === '1280x600',
+    `max=${bare.headers.get('x-frame-max')}`,
   );
   const bounded = await fetch(`${liveBase}${LIVE_IMAGE_PATH}?since=0&quality=999&max=40&maxh=99999`);
   await bounded.arrayBuffer();
@@ -475,7 +484,178 @@ try {
 
   await new Promise((r) => liveServer.close(r));
   disposeLive();
-  check('dispose 后四条实时路由一起摘掉', liveRoutes.size === 0, [...liveRoutes.keys()].join(','));
+  check('dispose 后六条路由一起摘掉', liveRoutes.size === 0, [...liveRoutes.keys()].join(','));
+
+  // ── P6：日志清理（手动「清理」与设置区「自动清理」共用的宿主路由）────────────
+  //        以及「一个会话都没有时，地址栏跳转要自己开一个会话」。
+  console.log('\nP6 面板：日志清理与无会话跳转');
+  const gateActions = [];
+  const noViewProvider = {
+    liveTarget: () => null,
+    liveView: () => null,
+    open: async (label) => {
+      gateActions.push({ kind: 'open', label });
+      return 's9';
+    },
+    openUrl: async (id, request) => {
+      gateActions.push({ kind: 'openUrl', id, url: request.url });
+      return 't9';
+    },
+  };
+  const gateRoutes = new Map();
+  const disposeGate = registerPanel(liveRoutesFor(gateRoutes), { provider: noViewProvider });
+  const gateServer = createServer((request, response) => {
+    const entry = gateRoutes.get(new URL(request.url, 'http://127.0.0.1').pathname);
+    if (!entry) {
+      response.writeHead(404);
+      response.end();
+      return;
+    }
+    entry.handler(request, response);
+  });
+  await new Promise((r) => gateServer.listen(0, '127.0.0.1', r));
+  const gateBase = `http://127.0.0.1:${gateServer.address().port}`;
+  const gatePost = (path, body, extra = {}) => fetch(`${gateBase}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(extra.headers ?? {}) },
+    body: JSON.stringify(body),
+  });
+
+  const noSessionState = await (await fetch(`${gateBase}${LIVE_STATE_PATH}`)).json();
+  check('没有会话时 live.json 仍回 200 并给出可操作提示',
+    noSessionState.live === false && /地址栏/.test(String(noSessionState.reason ?? '')),
+    JSON.stringify(noSessionState.reason));
+
+  const autoOpen = await gatePost(LIVE_INPUT_PATH, { kind: 'goto', url: 'example.com' });
+  const autoOpenBody = await autoOpen.json();
+  check('没有会话时地址栏跳转自动开会话、并补上 https',
+    autoOpen.status === 200 && autoOpenBody.opened === true && autoOpenBody.session === 's9'
+      && autoOpenBody.url === 'https://example.com'
+      && gateActions.some((a) => a.kind === 'open' && a.label === '面板地址栏')
+      && gateActions.some((a) => a.kind === 'openUrl' && a.id === 's9' && a.url === 'https://example.com'),
+    JSON.stringify({ status: autoOpen.status, body: autoOpenBody, last: gateActions.slice(-2) }));
+
+  const emptyUrl = await gatePost(LIVE_INPUT_PATH, { kind: 'goto', url: '   ' });
+  await emptyUrl.text();
+  check('空网址回 400（不拿空串去导航）', emptyUrl.status === 400, `status=${emptyUrl.status}`);
+
+  const noSessionInput = await gatePost(LIVE_INPUT_PATH, { kind: 'text', text: 'x' });
+  await noSessionInput.text();
+  check('没有画面时非跳转动作回 409 且带「先开页面」提示', noSessionInput.status === 409, `status=${noSessionInput.status}`);
+
+  for (let i = 0; i < 6; i += 1) appendNetwork({ seq: i, url: 'https://example.com/', status: 200 }, { root });
+  const trimmed = await gatePost(LOGS_PATH, { action: 'trim', kind: 'network', keep: 2 });
+  const trimmedBody = await trimmed.json();
+  check('日志清理 trim 只留最近 N 条',
+    trimmed.status === 200 && trimmedBody.result?.network === 2 && readNetwork({ root, lines: 20 }).total === 2,
+    JSON.stringify({ status: trimmed.status, body: trimmedBody, total: readNetwork({ root, lines: 20 }).total }));
+
+  const clearedAll = await gatePost(LOGS_PATH, { action: 'clear', kind: 'all' });
+  const clearedAllBody = await clearedAll.json();
+  check('日志清理 clear 一次清空全部分类',
+    clearedAll.status === 200 && Object.keys(clearedAllBody.result ?? {}).length === 3
+      && readNetwork({ root, lines: 20 }).total === 0 && readOps({ root, lines: 20 }).total === 0,
+    JSON.stringify(clearedAllBody.result));
+
+  const badKind = await gatePost(LOGS_PATH, { kind: 'bogus' });
+  const badKindBody = await badKind.json();
+  check('清理未知日志类型回 400',
+    badKind.status === 400 && /未知的日志类型/.test(String(badKindBody.error ?? '')),
+    `status=${badKind.status} error=${badKindBody.error}`);
+
+  const logsWrongMethod = await fetch(`${gateBase}${LOGS_PATH}`, { method: 'GET' });
+  await logsWrongMethod.text();
+  check('清理路由只收 POST（GET 回 405）', logsWrongMethod.status === 405, `status=${logsWrongMethod.status}`);
+
+  const logsCross = await gatePost(LOGS_PATH, { kind: 'all' }, { headers: { origin: 'http://evil.example' } });
+  await logsCross.text();
+  check('清理路由拒绝跨站请求（403）', logsCross.status === 403, `status=${logsCross.status}`);
+
+  const logsOuter = { code: 0, writeHead(code) { this.code = code; return this; }, end() {} };
+  gateRoutes.get(LOGS_PATH).handler({ socket: { remoteAddress: '10.0.0.9' }, method: 'POST', url: LOGS_PATH }, logsOuter);
+  check('清理路由非本机来源被拒（403）', logsOuter.code === 403, `code=${logsOuter.code}`);
+
+  await new Promise((r) => gateServer.close(r));
+  disposeGate();
+  check('dispose 后日志清理路由也摘掉', gateRoutes.size === 0, [...gateRoutes.keys()].join(','));
+
+  // ── P7：分辨率（面板「设置 → 分辨率」走宿主 POST /browser-service/viewport）──────
+  console.log('\nP7 面板：改浏览器窗口分辨率');
+  const vpCalls = [];
+  const vpProvider = {
+    viewport: () => ({ width: 1280, height: 720 }),
+    setViewport: async (request) => {
+      vpCalls.push({ width: request.width, height: request.height });
+      const width = Number(request.width);
+      const height = Number(request.height);
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+        const error = new Error('browser: 分辨率需要给出宽与高（像素，正整数）');
+        error.code = 'BROWSER_VIEWPORT_INVALID';
+        throw error;
+      }
+      return { width, height, applied: 1 };
+    },
+  };
+  const vpRoutes = new Map();
+  const disposeVp = registerPanel(liveRoutesFor(vpRoutes), { provider: vpProvider });
+
+  const vpServer = createServer((request, response) => {
+    const entry = vpRoutes.get(new URL(request.url, 'http://127.0.0.1').pathname);
+    if (!entry) {
+      response.writeHead(404);
+      response.end();
+      return;
+    }
+    entry.handler(request, response);
+  });
+  await new Promise((r) => vpServer.listen(0, '127.0.0.1', r));
+  const vpBase = `http://127.0.0.1:${vpServer.address().port}`;
+  const vpPost = (body, extra = {}) => fetch(`${vpBase}${VIEWPORT_PATH}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(extra.headers ?? {}) },
+    body: JSON.stringify(body),
+  });
+
+  const vpPanel = await (await fetch(`${vpBase}${PANEL_PATH}`)).json();
+  check('panel.json 的服务信息带出当前生效分辨率',
+    vpPanel.service?.viewport?.width === 1280 && vpPanel.service?.viewport?.height === 720,
+    JSON.stringify(vpPanel.service?.viewport));
+
+  const vpOk = await vpPost({ width: 1600, height: 900 });
+  const vpOkBody = await vpOk.json();
+  check('改分辨率回 200 并带出已应用的页面数',
+    vpOk.status === 200 && vpOkBody.viewport?.width === 1600 && vpOkBody.viewport?.height === 900
+      && vpOkBody.viewport?.applied === 1 && vpCalls.length === 1 && vpCalls[0].width === 1600,
+    JSON.stringify({ status: vpOk.status, body: vpOkBody, calls: vpCalls }));
+
+  const vpBad = await vpPost({ width: 0, height: -5 });
+  const vpBadBody = await vpBad.json();
+  check('非法分辨率回 400（provider 的校验错误原样透出）',
+    vpBad.status === 400 && /分辨率/.test(String(vpBadBody.error ?? '')),
+    `status=${vpBad.status} error=${vpBadBody.error}`);
+
+  const vpWrongMethod = await fetch(`${vpBase}${VIEWPORT_PATH}`);
+  await vpWrongMethod.text();
+  check('分辨率路由只收 POST（GET 回 405）', vpWrongMethod.status === 405, `status=${vpWrongMethod.status}`);
+
+  const vpCross = await vpPost({ width: 1280, height: 720 }, { headers: { origin: 'http://evil.example' } });
+  await vpCross.text();
+  check('分辨率路由拒绝跨站请求（403）', vpCross.status === 403, `status=${vpCross.status}`);
+
+  const vpOuter = { code: 0, writeHead(code) { this.code = code; return this; }, end() {} };
+  vpRoutes.get(VIEWPORT_PATH).handler({ socket: { remoteAddress: '10.0.0.9' }, method: 'POST', url: VIEWPORT_PATH }, vpOuter);
+  check('分辨率路由非本机来源被拒（403）', vpOuter.code === 403, `code=${vpOuter.code}`);
+
+  const vpBare = new Map();
+  const disposeVpBare = registerPanel(liveRoutesFor(vpBare));
+  const vpBareRes = { code: 0, writeHead(code) { this.code = code; return this; }, end() {} };
+  vpBare.get(VIEWPORT_PATH).handler({ socket: { remoteAddress: '127.0.0.1' }, method: 'POST', url: VIEWPORT_PATH, headers: {}, on() {}, destroy() {} }, vpBareRes);
+  check('没有 provider 时改分辨率回 503', vpBareRes.code === 503, `code=${vpBareRes.code}`);
+  disposeVpBare();
+
+  await new Promise((r) => vpServer.close(r));
+  disposeVp();
+  check('dispose 后分辨率路由也摘掉', vpRoutes.size === 0, [...vpRoutes.keys()].join(','));
 
   // ── 观测落盘不能把浏览器调用搞挂 ─────────────────────────────────────────
   console.log('\nP3 数据层：观测容错');

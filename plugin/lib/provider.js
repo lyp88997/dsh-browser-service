@@ -72,6 +72,9 @@ const TRACED_SKIP = new Set([
   'reset', 'history',
   // P4：实时窗口的取流/取目标不是「浏览器操作」，不进 ops（否则每秒一次取帧就把账本刷满）。
   'liveView', 'liveTarget',
+  // P7：视口 getter 是纯读取，跳过（setViewport 也不带会话参数，通用追踪本来就记不到它）；
+  // 改分辨率的结果由 setViewport 自己写日志。
+  'viewport',
 ]);
 const TARGET_INVALID = 'BROWSER_TARGET_INVALID';
 const ATTACH_FAILED = 'BROWSER_CDP_ATTACH_FAILED';
@@ -119,6 +122,20 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     return Math.min(50, Math.max(1, Math.floor(raw)));
   })();
 
+  // P7：浏览器窗口分辨率（面板「分辨率」设置）。配置里给的是启动默认值，
+  // 面板可以在运行时改（现页立即生效、之后新建的上下文也用新值），所以夹取范围放在这里当单一事实源。
+  const VIEWPORT_MIN = { width: 640, height: 360 };
+  const VIEWPORT_MAX = { width: 3840, height: 2160 };
+  const clampViewport = (value, fallback, min, max) => {
+    const raw = Number(value);
+    if (!Number.isFinite(raw)) return fallback;
+    return Math.min(max, Math.max(min, Math.floor(raw)));
+  };
+  const initialViewport = {
+    width: clampViewport(config.viewportWidth, 1440, VIEWPORT_MIN.width, VIEWPORT_MAX.width),
+    height: clampViewport(config.viewportHeight, 900, VIEWPORT_MIN.height, VIEWPORT_MAX.height),
+  };
+
   class CdpProvider {
     id = config.providerId;
 
@@ -136,6 +153,9 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
 
     // P4：最近活跃的会话 id —— 实时窗口（网页面板）不带会话参数时用它。
     #lastActive = null;
+
+    // P7：当前生效的浏览器窗口分辨率（面板可改，新建上下文与已开页面都用它）。
+    #viewport = { ...initialViewport };
 
     /** 廉价可用性：只反映依赖是否就绪，不做任何网络探测（daemon 未起时由 open() 报错）。 */
     available() {
@@ -309,7 +329,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
       session.live = null;
       try {
         const context = await conn.newContext({
-          viewport: { width: config.viewportWidth, height: config.viewportHeight },
+          viewport: { ...this.#viewport },
         });
         const page = await context.newPage();
         session.conn = conn;
@@ -601,7 +621,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
       const har = harPath ? { recordHar: { path: harPath, content: 'omit' } } : {};
       let context;
       try {
-        context = await browser.newContext({ viewport: { width: config.viewportWidth, height: config.viewportHeight }, ...har });
+        context = await browser.newContext({ viewport: { ...this.#viewport }, ...har });
       } catch (error) {
         throw fail(`browser: 无法创建隔离上下文：${describe(error)}`, ATTACH_FAILED, error);
       }
@@ -689,6 +709,44 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
       if (id && this.#sessions.has(id)) return id;
       const last = [...this.#sessions.keys()].pop();
       return last ?? null;
+    }
+
+    // ---- 浏览器窗口分辨率（P7 / 0.8.1 追加）：面板「设置 → 分辨率」----
+
+    /**
+     * 改窗口分辨率：现页立即用 `page.setViewportSize` 改掉（页面会按新尺寸重排，取帧跟着变），
+     * 同时记住给之后新建的上下文用 —— 不然「改了设置但新开的会话又回到 1440×900」。
+     * 单个页面改失败只记警告（页面可能刚好被关掉），不影响其它页面与返回值。
+     */
+    async setViewport(request = {}) {
+      const rawW = Number(request?.width);
+      const rawH = Number(request?.height);
+      if (!Number.isFinite(rawW) || !Number.isFinite(rawH) || rawW <= 0 || rawH <= 0) {
+        throw fail('browser: 分辨率需要给出宽与高（像素，正整数）', 'BROWSER_VIEWPORT_INVALID');
+      }
+      const width = clampViewport(rawW, initialViewport.width, VIEWPORT_MIN.width, VIEWPORT_MAX.width);
+      const height = clampViewport(rawH, initialViewport.height, VIEWPORT_MIN.height, VIEWPORT_MAX.height);
+      this.#viewport = { width, height };
+      let applied = 0;
+      for (const session of this.#sessions.values()) {
+        if (session.closed) continue;
+        for (const page of session.tabs.values()) {
+          if (!page || page.isClosed()) continue;
+          try {
+            await page.setViewportSize(this.#viewport);
+            applied += 1;
+          } catch (error) {
+            note('warn', `browser-cdp: 会话 ${session.id} 有一个页面改分辨率失败：${describe(error)}`);
+          }
+        }
+      }
+      note('info', `browser-cdp: 窗口分辨率改为 ${width}×${height}（已应用到 ${applied} 个页面）`);
+      return { ...this.#viewport, applied };
+    }
+
+    /** 当前生效的窗口分辨率（只读；面板服务信息块与 `panel.json` 用）。 */
+    viewport() {
+      return { ...this.#viewport };
     }
 
     async openUrl(id, request, signal) {
@@ -1196,7 +1254,7 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
       try {
         const wantsScale = (Number.isFinite(request?.maxWidth) || Number.isFinite(request?.maxHeight)) && !request?.fullPage;
         if (wantsScale) {
-          const viewport = page.viewportSize() ?? { width: config.viewportWidth, height: config.viewportHeight };
+          const viewport = page.viewportSize() ?? { ...this.#viewport };
           const scale = Math.min(
             1,
             Number.isFinite(request?.maxWidth) ? request.maxWidth / viewport.width : 1,

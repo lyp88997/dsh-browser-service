@@ -64,6 +64,22 @@ export function readEntries(kind, { root = defaultRoot(), lines = 50 } = {}) {
   return { file, total: all.length, entries };
 }
 
+/**
+ * 清理日志：保留尾部 keep 条（keep = 0 即清空）。
+ *
+ * 与写入路径的「永不抛错」相反：这是用户点「清理」或自动清理触发的交互操作，
+ * IO 失败要如实报错让面板能提示，不能假装成功。返回保留的条数。
+ */
+export function clearEntries(kind, { root = defaultRoot(), keep = 0 } = {}) {
+  const file = logFileFor(root, kind);
+  if (!existsSync(file)) return 0;
+  const lines = readFileSync(file, 'utf8').split('\n').filter(Boolean);
+  const size = Math.max(0, Math.floor(Number(keep)) || 0);
+  const tail = size > 0 ? lines.slice(-size) : [];
+  writeFileSync(file, tail.length ? `${tail.join('\n')}\n` : '', { mode: 0o600 });
+  return tail.length;
+}
+
 export const appendOp = (entry, options) => appendEntry('ops', entry, options);
 export const appendConsole = (entry, options) => appendEntry('console', entry, options);
 export const appendNetwork = (entry, options) => appendEntry('network', entry, options);

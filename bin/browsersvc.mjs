@@ -2,8 +2,9 @@
 /**
  * browsersvc —— 单例浏览器 CDP 守护进程的 CLI。
  *
- *   browsersvc start|stop|status|restart|run|logs|ops|console|network|har|cookies|detect [--port=9333] [--idle-ms=900000]
+ *   browsersvc start|stop|status|restart|run|logs|ops|console|network|har|cookies|detect|skills [--port=9333] [--idle-ms=900000]
  *              [--kernel=/path/to/chrome] [--wrapper=/path/to/wrapper.sh] [--root=/path/to/state]
+ *              [--install] [--force] [--dir=$DSH_HOME/skills]   # skills：查看/安装随包全局技能
  *
  * 约定：CDP 只监听 127.0.0.1；对外端口由本地代理暴露，代理同时负责空闲回收。
  */
@@ -14,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { detectKernels, ensureRoot, logFile, readConfigFile, resolveConfig, stateFile } from '../src/config.mjs';
 import { isAlive, probeVersion, readState, runSupervisor } from '../src/daemon.mjs';
 import { readConsole, readNetwork, readOps } from '../src/opslog.mjs';
+import { defaultSkillsRoot, inspectSkills, syncSkills } from '../src/skills.mjs';
 
 const BIN = fileURLToPath(new URL('./browsersvc.mjs', import.meta.url));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -413,8 +415,47 @@ function detect(cfg) {
   });
 }
 
+const SKILL_STATE = {
+  missing: '缺失',
+  current: '已最新',
+  update: '可升级',
+  modified: '你改过',
+  foreign: '非本包',
+  'unreadable-source': '源读不到',
+};
+
+/** 随包全局技能：不带 --install 只报状态；带 --install 落盘（默认目标 `$DSH_HOME/skills`）。 */
+function skills(flags) {
+  const root = typeof flags.dir === 'string' && flags.dir ? resolve(flags.dir) : defaultSkillsRoot();
+  if (flags.install !== true) {
+    const st = inspectSkills({ root });
+    if (flags.json === true) print({ skillsDir: root, source: st.source, version: st.version, marker: st.marker, files: st.files });
+    const lines = st.files.map((f) => `${SKILL_STATE[f.state].padEnd(6)} ${f.path}`);
+    const pending = st.files.filter((f) => f.state === 'missing' || f.state === 'update').length;
+    process.stdout.write(
+      `${lines.join('\n')}\n\n技能目录：${root}\n随包来源：${st.source}\n本包版本：${st.version}；台账：${st.marker.version ?? '无'}\n`
+      + `待处理 ${pending} 个（${pending > 0 ? 'browsersvc skills --install 装上' : '不用动'}）；槽位冲突 ${st.files.filter((f) => f.state === 'modified' || f.state === 'foreign').length} 个（要覆盖加 --force）\n`,
+    );
+    process.exit(0);
+  }
+  const res = syncSkills({ root, force: flags.force === true });
+  if (flags.json === true) print(res, res.errors.length > 0 ? 1 : 0);
+  const parts = [
+    `装 ${res.installed.length}`,
+    `升级 ${res.updated.length}`,
+    `已最新 ${res.unchanged.length}`,
+    `跳过 ${res.skipped.length}`,
+  ];
+  process.stdout.write(`${parts.join(' · ')}\n技能目录：${root}（本包 ${res.version}）\n`);
+  for (const item of res.skipped) process.stdout.write(`  跳过 ${item.path} —— ${item.reason}（要覆盖加 --force）\n`);
+  for (const item of res.errors) process.stdout.write(`  失败 ${item}\n`);
+  if (res.errors.length > 0) process.exit(1);
+  process.stdout.write(`${res.installed.length + res.updated.length > 0 ? '技能下次会话即可用（重启 DSH 最稳）' : '没有需要写入的改动'}\n`);
+  process.exit(0);
+}
+
 const { cmd, flags } = parse(process.argv.slice(2));
-const USAGE = 'browsersvc start|stop|status|restart|run|logs|ops|console|network|har|cookies|detect [--port=9333] [--idle-ms=900000] [--kernel=...] [--wrapper=...] [--root=...] [--start-timeout=30000] [--internal-port-base=9300] [--lines=20] [--out=file] [--session=s1] [--url=https://a.com] [--export=file] [--import=file]';
+const USAGE = 'browsersvc start|stop|status|restart|run|logs|ops|console|network|har|cookies|detect|skills [--port=9333] [--idle-ms=900000] [--kernel=...] [--wrapper=...] [--root=...] [--start-timeout=30000] [--internal-port-base=9300] [--lines=20] [--out=file] [--session=s1] [--url=https://a.com] [--export=file] [--import=file] [--install] [--force] [--dir=/path/to/skills] [--json]';
 
 try {
   const cfg = toCfg(flags);
@@ -464,6 +505,9 @@ try {
       break;
     case 'detect':
       detect(cfg);
+      break;
+    case 'skills':
+      skills(flags);
       break;
     default:
       print({ error: `unknown command: ${cmd}`, usage: USAGE }, 2);

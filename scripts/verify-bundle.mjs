@@ -17,7 +17,7 @@
  * 环境变量：DSH_BIN（默认 dsh）
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -100,6 +100,12 @@ console.log('1. 交付物形状（一个包）');
   check('tarball 含接缝/工具转出口', listed.includes('package/plugin/shims/browser.js') && listed.includes('package/plugin/shims/tool-browser.js'));
   check('tarball 含 bundle patch', listed.includes('package/plugin/cordis.patch.yml'));
   check('tarball 含守护进程 CLI', listed.includes('package/bin/browsersvc.mjs'));
+  check('tarball 含随包全局技能（两份 SKILL.md + browser-runtime 的脚本）',
+    listed.includes('package/skills/browser/SKILL.md')
+    && listed.includes('package/skills/browser-runtime/SKILL.md')
+    && listed.includes('package/skills/browser-runtime/scripts/browse.mjs')
+    && listed.includes('package/skills/browser-runtime/scripts/chromium-wrapper.sh'),
+    listed.filter((p) => p.startsWith('package/skills/')).join(' , ') || '（一个都没有）');
 }
 
 // 2) 官方安装命令：包进依赖 + 层追加到 bundles
@@ -258,18 +264,66 @@ console.log('5c. 客户端半边（网页面板）');
   check('看板组件能渲染（没有数据时回落胶囊）', c.render === 'null', String(c.render));
   check('客户端半边引用实时窗口的三条路由（与服务端一字不差）',
     (c.liveRoutes ?? []).length === 3, JSON.stringify(c.liveRoutes));
-  check('客户端半边导出可测的纯函数（几何夹取 / 设置规整）',
-    ['clampInt', 'clampRect', 'normalizeSettings'].every((name) => (c.internals ?? []).includes(name)),
+  check('客户端半边引用两条写路由（清日志 / 改分辨率）',
+    (c.writeRoutes ?? []).length === 2, JSON.stringify(c.writeRoutes));
+  check('客户端半边导出可测的纯函数（几何夹取 / 设置规整 / 外观样式）',
+    ['clampInt', 'clampRect', 'normalizeSettings', 'pillAnchor', 'withScheme', 'appearanceStyle'].every((name) => (c.internals ?? []).includes(name)),
     JSON.stringify(c.internals));
   check('窗口几何夹取：超界收进视口、没记过位置时贴右下角',
     c.clamp?.oversize?.w === 800 && c.clamp?.oversize?.h === 600 && c.clamp?.oversize?.x === 0 && c.clamp?.oversize?.y === 0
       && c.clamp?.undersize?.w === 320 && c.clamp?.undersize?.h === 240
       && c.clamp?.anchored?.x === 400 && c.clamp?.anchored?.y === 300,
     JSON.stringify(c.clamp));
-  check('设置规整：越界夹取、非法入口回落网页',
+  check('窗口几何夹取认「面板间距」：可用区域扣掉两侧边距，落位不贴边',
+    c.clamp?.margin?.w === 780 && c.clamp?.margin?.h === 580 && c.clamp?.margin?.x === 10 && c.clamp?.margin?.y === 10,
+    JSON.stringify(c.clamp?.margin));
+  check('设置规整：越界夹取、非法入口回落网页、新键有默认值',
     c.settings?.quality === 95 && c.settings?.maxWidth === 320 && c.settings?.pollMs === 500
-      && c.settings?.lines === 200 && c.settings?.tab === 'live',
+      && c.settings?.lines === 200 && c.settings?.tab === 'live'
+      && c.settings?.pillPos === 'lt' && c.settings?.autoClean === 0
+      && c.settings?.viewport === '1440x900' && c.settings?.pillX === 15 && c.settings?.pillY === 48
+      && c.settings?.panelGap === 10 && c.settings?.zBase === 40
+      && c.settings?.borderColor === 'theme' && c.settings?.cardAlpha === 95 && c.settings?.glass === 'frost',
     JSON.stringify(c.settings));
+  check('窗口外观规整：颜色只认主题/无/6 位十六进制、不透明度夹到可读范围、未知玻璃档回落毛玻璃',
+    c.appearanceClamp?.borderColor === 'theme' && c.appearanceClamp?.cardAlpha === 20
+      && c.appearanceClamp?.glass === 'frost' && c.appearanceCustom === '#aabbcc',
+    JSON.stringify({ clamp: c.appearanceClamp, custom: c.appearanceCustom }));
+  check('窗口外观样式：自定义色 + 液态玻璃出高光与内圈描边，无边框 + 关玻璃出全透明边与零模糊；内部分区随透明度、分隔线随自定义色',
+    c.appear?.liquid?.['--bsp-alpha'] === '60%' && c.appear?.liquid?.['--bsp-rim'] === '#aabbcc'
+      && c.appear?.liquid?.['--bsp-blur'] === '18px' && c.appear?.liquid?.['--bsp-sat'] === '165%'
+      && c.appear?.liquid?.['--bsp-glow'] === '1' && typeof c.appear?.liquid?.['--bsp-shadow'] === 'string'
+      && c.appear?.plain?.['--bsp-alpha'] === '100%' && c.appear?.plain?.['--bsp-rim'] === 'transparent'
+      && c.appear?.plain?.['--bsp-blur'] === '0px' && c.appear?.plain?.['--bsp-glow'] === '0'
+      && c.appear?.plain?.['--bsp-shadow'] === undefined
+      // 外壳透明了，里面那几块（标题栏/左侧入口/底栏/吸顶条）也必须跟着透明，否则只有边框线在变
+      && /^color-mix\(in srgb,.+ 60%,transparent\)$/.test(c.appear?.liquid?.['--bsp-card'] ?? '')
+      && /^color-mix\(in srgb,.+ 60%,transparent\)$/.test(c.appear?.liquid?.['--bsp-surface'] ?? '')
+      && String(c.appear?.liquid?.['--bsp-card']).includes('bg-layer-2')
+      && String(c.appear?.liquid?.['--bsp-surface']).includes('bg-layer-3')
+      // 自定义边框色时内部隔线同色调一层浅的；主题/无边框时保持宿主细线
+      && String(c.appear?.liquid?.['--bsp-divider']).includes('#aabbcc')
+      && String(c.appear?.liquid?.['--bsp-divider']).includes('45%')
+      && String(c.appear?.plain?.['--bsp-divider']).includes('border-l1')
+      && /^color-mix\(in srgb,.+ 100%,transparent\)$/.test(c.appear?.plain?.['--bsp-surface'] ?? ''),
+    JSON.stringify(c.appear));
+  check('设置规整：像素量与分辨率档位越界一律拉回',
+    c.settingsClamp?.pillX === 0 && c.settingsClamp?.pillY === 400
+      && c.settingsClamp?.panelGap === 0 && c.settingsClamp?.zBase === 1
+      && c.settingsClamp?.viewport === '1440x900',
+    JSON.stringify(c.settingsClamp));
+  check('胶囊四角定位只给对角两边的偏移、非法值回落左上',
+    c.pill?.lt?.left === '15px' && c.pill?.lt?.top === '48px' && c.pill?.lt?.right === 'auto' && c.pill?.lt?.bottom === 'auto'
+      && c.pill?.rb?.right === '15px' && c.pill?.rb?.bottom === '48px' && c.pill?.rb?.left === 'auto' && c.pill?.rb?.top === 'auto'
+      && c.pill?.bad?.left === '15px' && c.pill?.bad?.top === '48px',
+    JSON.stringify(c.pill));
+  check('胶囊偏移可自定义（水平 30 / 垂直 60 直接落到命中角）',
+    c.pill?.custom?.right === '30px' && c.pill?.custom?.top === '60px'
+      && c.pill?.custom?.left === 'auto' && c.pill?.custom?.bottom === 'auto',
+    JSON.stringify(c.pill?.custom));
+  check('地址栏输入补协议（与宿主 normalizeUrl 同规则，空串不提交）',
+    c.scheme?.bare === 'https://example.com' && c.scheme?.full === 'http://a' && c.scheme?.empty === '',
+    JSON.stringify(c.scheme));
   const seeds = new Set([
     'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client',
     '@deepseek-ai/cordis', '@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-client-ui-slots',
@@ -280,8 +334,64 @@ console.log('5c. 客户端半边（网页面板）');
     JSON.stringify(c.requires));
 }
 
-// 6) 官方移除命令：依赖与层同时移除
-console.log('6. dsh plugin --profile … remove <pkg>');
+// 6) 随包全局技能：装到技能根目录、台账归属、改过的文件不覆盖
+console.log('6. 随包全局技能（skills/ → 技能根目录）');
+{
+  const skillsDir = join(root, 'skills');
+  const bin = join(installed, 'bin', 'browsersvc.mjs');
+  const call = (args) => spawnSync(process.execPath, [bin, ...args], { env, encoding: 'utf8', timeout: 30_000 });
+  const before = call(['skills', '--dir', skillsDir]);
+  check('空目录时 skills 报全部缺失且退出码 0',
+    before.status === 0 && (before.stdout.match(/缺失/g) ?? []).length >= 7,
+    (before.stdout ?? '').split('\n').slice(0, 2).join(' | '));
+
+  const first = call(['skills', '--install', '--dir', skillsDir]);
+  check('--install 把 7 个技能文件（含 scripts/）装进技能根目录',
+    first.status === 0 && /装 7 · 升级 0/.test(first.stdout ?? '')
+    && ['browser/SKILL.md', 'browser-runtime/SKILL.md', 'browser-runtime/scripts/fonts.conf']
+      .every((rel) => existsSync(join(skillsDir, rel))),
+    (first.stdout ?? '').split('\n')[0]);
+
+  const marker = JSON.parse(readFileSync(join(skillsDir, '.dsh-browser-service.skills.json'), 'utf8'));
+  check('写入归属台账（版本 = 包版本，7 条哈希）',
+    marker.version === PKG_VERSION && Object.keys(marker.files ?? {}).length === 7,
+    JSON.stringify({ version: marker.version, files: Object.keys(marker.files ?? {}).length }));
+
+  const again = call(['skills', '--install', '--dir', skillsDir]);
+  check('重复安装是幂等的（7 个已最新、不重写台账）',
+    again.status === 0 && /装 0 · 升级 0 · 已最新 7/.test(again.stdout ?? '') && /没有需要写入的改动/.test(again.stdout ?? ''),
+    (again.stdout ?? '').split('\n')[0]);
+
+  const edited = join(skillsDir, 'browser', 'SKILL.md');
+  writeFileSync(edited, `${readFileSync(edited, 'utf8')}\n<!-- 用户自己加的一行 -->\n`);
+  const guarded = call(['skills', '--install', '--dir', skillsDir]);
+  check('磁盘上被改过的技能不覆盖（跳过 1 并说清原因）',
+    guarded.status === 0 && /跳过 1/.test(guarded.stdout ?? '')
+    && /被改过/.test(guarded.stdout ?? '')
+    && readFileSync(edited, 'utf8').includes('用户自己加的一行'),
+    (guarded.stdout ?? '').split('\n').slice(0, 2).join(' | '));
+
+  const forced = call(['skills', '--install', '--force', '--dir', skillsDir]);
+  check('--force 才覆盖（升级 1 且内容回到随包版本）',
+    forced.status === 0 && /升级 1/.test(forced.stdout ?? '')
+    && !readFileSync(edited, 'utf8').includes('用户自己加的一行'),
+    (forced.stdout ?? '').split('\n')[0]);
+
+  const listed = JSON.parse((call(['skills', '--dir', skillsDir, '--json']).stdout ?? '').trim() || '{}');
+  check('skills --json 列出每个文件的状态与哈希（可被脚本消费）',
+    Array.isArray(listed.files) && listed.files.length === 7
+    && listed.files.every((f) => f.state === 'current' && typeof f.sourceHash === 'string')
+    && listed.skillsDir === skillsDir,
+    JSON.stringify({ skillsDir: listed.skillsDir, states: [...new Set((listed.files ?? []).map((f) => f.state))] }));
+
+  const pluginSource = readFileSync(join(installed, 'plugin', 'lib', 'index.js'), 'utf8');
+  check('插件启动时也会同步（apply 里调用 syncSkills + 两个配置项）',
+    /syncSkills\(\{/.test(pluginSource) && /syncSkills: Schema\.boolean\(\)\.default\(true\)/.test(pluginSource)
+    && /skillsDir: Schema\.string\(\)/.test(pluginSource));
+}
+
+// 7) 官方移除命令：依赖与层同时移除
+console.log('7. dsh plugin --profile … remove <pkg>');
 {
   const { status, out } = run(['plugin', '--profile', PROFILE, 'remove', PKG], { allowFail: true });
   check('remove 退出码 0', status === 0, out.trim().split('\n').slice(-3).join(' | '));
