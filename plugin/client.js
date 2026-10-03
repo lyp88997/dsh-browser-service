@@ -124,12 +124,13 @@ window.__ModuleLoader__.load({
     /** 日志型入口（有计数徽标、有「只看异常」）。 */
     const LOG_TABS = ['ops', 'console', 'network'];
 
-    /** 收起成胶囊后贴哪一角（默认左上，跟前一版一致）。 */
+    /** 收起成胶囊后贴哪一角（默认左上，跟前一版一致）；「自由」＝直接记坐标，可拖到任意位置。 */
     const PILL_POS = [
       ['lt', '左上'],
       ['rt', '右上'],
       ['lb', '左下'],
       ['rb', '右下'],
+      ['free', '自由'],
     ];
     const PILL_IDS = PILL_POS.map(([id]) => id);
 
@@ -153,6 +154,10 @@ window.__ModuleLoader__.load({
 
     /** 胶囊偏移 / 面板间距 / 层级基准的可调范围（纯像素）。 */
     const OFFSET_RANGE = [0, 400];
+    /** 「自由位置」模式下 pillX/pillY 存的是屏幕坐标，范围要够装下任意视口（渲染时再按视口夹）。 */
+    const PILL_COORD_RANGE = [0, 10000];
+    /** 拖动判定：位移超过这么多像素才算拖动，否则当成点击（要能点开面板）。 */
+    const DRAG_SLOP = 4;
     const GAP_RANGE = [0, 64];
     const Z_RANGE = [1, 2000];
     /** 顶部留白：窗口顶部要让开宿主顶栏的高度（'auto' = 自动量，或 0~200 手填）。 */
@@ -198,7 +203,8 @@ window.__ModuleLoader__.load({
       // 0.8.2 起的新默认值（用户指定）：画质 70（省流量）、不自动取帧（打开面板不占 CPU/带宽）、
       // 视口 1920×1080、外观 40% 不透明 + 毛玻璃。
       quality: 70,
-      maxWidth: 1280,
+      // 最大边 0.8.3 起默认 1920（用户指定）：与默认视口同长边，画面不再先缩到 1280 再放大。
+      maxWidth: 1920,
       pollMs: DEFAULT_POLL_MS,
       lines: DEFAULT_LINES,
       tab: 'live',
@@ -302,11 +308,14 @@ window.__ModuleLoader__.load({
   color:${tok.fg};box-shadow:var(--bsp-shadow,0 6px 20px rgba(0,0,0,0.22));
   backdrop-filter:blur(var(--bsp-blur,8px)) saturate(var(--bsp-sat,100%));
   -webkit-backdrop-filter:blur(var(--bsp-blur,8px)) saturate(var(--bsp-sat,100%));
-  font:12px/1.4 ${UI};cursor:pointer;
+  font:12px/1.4 ${UI};cursor:grab;touch-action:none;user-select:none;
   transition:background-color 130ms ease,transform 130ms ease,border-color 130ms ease;
   animation:bspPop 160ms cubic-bezier(.2,.8,.3,1)}
 .bsp-pill:hover{background:var(--bsp-surface,${tok.bg3});border-color:${tok.border3};transform:translateY(-1px)}
 .bsp-pill:active{transform:translateY(0) scale(.985)}
+/* 正在拖动：别跟手较劲（去掉 hover/active 的位移与过渡），光标也换成抓手。 */
+.bsp-pill.bsp-grabbing{cursor:grabbing;transition:none;transform:none}
+.bsp-pill.bsp-grabbing:hover{transform:none}
 .bsp-pill:focus-visible{outline:2px solid ${tok.accent};outline-offset:2px}
 .bsp-pillName{font-weight:600;color:${tok.brand}}
 .bsp-pillMeta{color:${tok.fg3}}
@@ -498,6 +507,9 @@ window.__ModuleLoader__.load({
     /** 设置对象规整（纯函数）：坏值/越界一律拉回安全范围，方便服务端与本地各用一半。 */
     function normalizeSettings(raw) {
       const source = raw && typeof raw === 'object' ? raw : {};
+      // 胶囊位置先定下来：「自由」时 pillX/pillY 是屏幕坐标（范围宽），贴角时是离边偏移（0~400）。
+      const pillPos = PILL_IDS.includes(source.pillPos) ? source.pillPos : DEFAULT_SETTINGS.pillPos;
+      const pillRange = pillPos === 'free' ? PILL_COORD_RANGE : OFFSET_RANGE;
       return {
         quality: clampInt(source.quality, QUALITY_RANGE[0], QUALITY_RANGE[1], DEFAULT_SETTINGS.quality),
         maxWidth: clampInt(source.maxWidth, WIDTH_RANGE[0], WIDTH_RANGE[1], DEFAULT_SETTINGS.maxWidth),
@@ -507,13 +519,13 @@ window.__ModuleLoader__.load({
         autoStream: source.autoStream === undefined ? DEFAULT_SETTINGS.autoStream : source.autoStream !== false,
         fitPicture: source.fitPicture === undefined ? DEFAULT_SETTINGS.fitPicture : source.fitPicture !== false,
         remember: source.remember === undefined ? DEFAULT_SETTINGS.remember : source.remember !== false,
-        pillPos: PILL_IDS.includes(source.pillPos) ? source.pillPos : DEFAULT_SETTINGS.pillPos,
+        pillPos,
         autoClean: AUTO_CLEAN_IDS.includes(Number(source.autoClean))
           ? Number(source.autoClean)
           : DEFAULT_SETTINGS.autoClean,
         viewport: VIEWPORT_IDS.includes(source.viewport) ? source.viewport : DEFAULT_SETTINGS.viewport,
-        pillX: clampInt(source.pillX, OFFSET_RANGE[0], OFFSET_RANGE[1], DEFAULT_SETTINGS.pillX),
-        pillY: clampInt(source.pillY, OFFSET_RANGE[0], OFFSET_RANGE[1], DEFAULT_SETTINGS.pillY),
+        pillX: clampInt(source.pillX, pillRange[0], pillRange[1], DEFAULT_SETTINGS.pillX),
+        pillY: clampInt(source.pillY, pillRange[0], pillRange[1], DEFAULT_SETTINGS.pillY),
         panelGap: clampInt(source.panelGap, GAP_RANGE[0], GAP_RANGE[1], DEFAULT_SETTINGS.panelGap),
         topInset: source.topInset === undefined || source.topInset === 'auto'
           ? DEFAULT_SETTINGS.topInset
@@ -567,20 +579,57 @@ window.__ModuleLoader__.load({
       return style;
     }
 
+    /** 一维夹取（纯函数）：给了视口 + 自身尺寸就夹进 [0, 视口 - 自己]；没有视口原样返回。 */
+    function fitAxis(value, extent, own) {
+      const e = Number(extent);
+      if (!Number.isFinite(e) || e <= 0) return value;
+      const o = Number(own);
+      const room = Math.max(0, Math.round(e - (Number.isFinite(o) ? o : 0)));
+      return Math.max(0, Math.min(value, room));
+    }
+
     /**
      * 胶囊贴到哪一角（纯函数）：命中角给偏移像素（默认 15 / 48，设置里可改），其余边给 auto。
      * 偏移量走的是「离屏幕边多远」，所以角不同也读同一对数 —— 改一次四角都跟着走。
+     * 「自由」模式给 left/top 坐标；传了 bounds/size 就顺手夹进视口（存的坐标可能来自更大的屏幕）。
      */
-    function pillAnchor(pos, offsetX = DEFAULT_SETTINGS.pillX, offsetY = DEFAULT_SETTINGS.pillY) {
+    function pillAnchor(pos, offsetX = DEFAULT_SETTINGS.pillX, offsetY = DEFAULT_SETTINGS.pillY, bounds = null, size = null) {
       const id = PILL_IDS.includes(pos) ? pos : DEFAULT_SETTINGS.pillPos;
-      const x = `${clampInt(offsetX, OFFSET_RANGE[0], OFFSET_RANGE[1], DEFAULT_SETTINGS.pillX)}px`;
-      const y = `${clampInt(offsetY, OFFSET_RANGE[0], OFFSET_RANGE[1], DEFAULT_SETTINGS.pillY)}px`;
+      const range = id === 'free' ? PILL_COORD_RANGE : OFFSET_RANGE;
+      const rawX = clampInt(offsetX, range[0], range[1], DEFAULT_SETTINGS.pillX);
+      const rawY = clampInt(offsetY, range[0], range[1], DEFAULT_SETTINGS.pillY);
+      if (id === 'free') {
+        return {
+          left: `${fitAxis(rawX, bounds?.w, size?.w)}px`,
+          top: `${fitAxis(rawY, bounds?.h, size?.h)}px`,
+          right: 'auto',
+          bottom: 'auto',
+        };
+      }
+      const x = `${rawX}px`;
+      const y = `${rawY}px`;
       return {
         left: id === 'lt' || id === 'lb' ? x : 'auto',
         right: id === 'rt' || id === 'rb' ? x : 'auto',
         top: id === 'lt' || id === 'rt' ? y : 'auto',
         bottom: id === 'lb' || id === 'rb' ? y : 'auto',
       };
+    }
+
+    /**
+     * 胶囊当前的绝对屏幕坐标（纯函数）：已经「自由」就直接读坐标，贴角就按角 + 偏移 + 自身尺寸换算。
+     * 切到「自由」时拿它当起点，胶囊不会跳；拖动开始时也拿它兜底。
+     */
+    function pillPoint(settings, size, bounds) {
+      const s = normalizeSettings(settings);
+      const w = Number(size?.w) > 0 ? Math.round(size.w) : 0;
+      const h = Number(size?.h) > 0 ? Math.round(size.h) : 0;
+      if (s.pillPos === 'free') return { x: fitAxis(s.pillX, bounds?.w, w), y: fitAxis(s.pillY, bounds?.h, h) };
+      const bw = Number(bounds?.w) > 0 ? Math.round(bounds.w) : 0;
+      const bh = Number(bounds?.h) > 0 ? Math.round(bounds.h) : 0;
+      const x = s.pillPos === 'rt' || s.pillPos === 'rb' ? Math.max(0, bw - s.pillX - w) : s.pillX;
+      const y = s.pillPos === 'lb' || s.pillPos === 'rb' ? Math.max(0, bh - s.pillY - h) : s.pillY;
+      return { x: fitAxis(x, bounds?.w, w), y: fitAxis(y, bounds?.h, h) };
     }
 
     /**
@@ -1163,10 +1212,13 @@ window.__ModuleLoader__.load({
      * 下面再放一块只读的生效配置。
      * 服务信息一律「有才显示，没有给 —」：0.7.0 时代的宿主没有 service/options 块也不能崩。
      */
-    function SettingsPane({ settings, onPatch, service, options, onReset, dirty, saveNote, onSave, onDefaults }) {
+    function SettingsPane({ settings, onPatch, service, options, onReset, dirty, saveNote, onSave, onDefaults, pillPoint }) {
       // 用「补丁」而不是「整份设置」：同一拍里连点两个按钮时，后一个不会把前一个覆盖掉。
       const set = (patch) => onPatch(patch);
       const frame = service?.live ?? options;
+      // 「自由」模式下 pillX/pillY 是屏幕坐标：标签、上限都跟着变（上限按当前视口）。
+      const free = settings.pillPos === 'free';
+      const bounds = viewport();
       // 改分辨率是服务端动作（换窗口大小会让已开页面重排），成败都要看得见。
       const [vpNote, setVpNote] = React.useState(null);
       const applyViewport = async (id) => {
@@ -1275,20 +1327,30 @@ window.__ModuleLoader__.load({
             label: '胶囊位置',
             value: settings.pillPos,
             options: PILL_POS,
-            onChange: (pillPos) => set({ pillPos }),
+            onChange: (pillPos) => {
+              // 切到「自由」时以当前实际位置为起点（按角 + 偏移换算），胶囊不会跳。
+              if (pillPos === 'free') {
+                const at = pillPoint?.();
+                if (at) {
+                  set({ pillPos, pillX: at.x, pillY: at.y });
+                  return;
+                }
+              }
+              set({ pillPos });
+            },
           })),
-          h(Field, { label: '水平偏移' }, h(NumberField, {
-            label: '胶囊水平偏移',
+          h(Field, { label: free ? '水平坐标' : '水平偏移' }, h(NumberField, {
+            label: free ? '胶囊水平坐标' : '胶囊水平偏移',
             value: settings.pillX,
-            min: OFFSET_RANGE[0],
-            max: OFFSET_RANGE[1],
+            min: 0,
+            max: free ? Math.max(1, Math.round(bounds.w)) : OFFSET_RANGE[1],
             onChange: (pillX) => set({ pillX }),
           })),
-          h(Field, { label: '垂直偏移' }, h(NumberField, {
-            label: '胶囊垂直偏移',
+          h(Field, { label: free ? '垂直坐标' : '垂直偏移' }, h(NumberField, {
+            label: free ? '胶囊垂直坐标' : '胶囊垂直偏移',
             value: settings.pillY,
-            min: OFFSET_RANGE[0],
-            max: OFFSET_RANGE[1],
+            min: 0,
+            max: free ? Math.max(1, Math.round(bounds.h)) : OFFSET_RANGE[1],
             onChange: (pillY) => set({ pillY }),
           })),
           h(Field, { label: '面板间距' }, h(NumberField, {
@@ -1333,7 +1395,7 @@ window.__ModuleLoader__.load({
           h(Field, { label: '窗口' },
             h('button', { type: 'button', className: 'bsp-btn', onClick: onReset }, '恢复默认大小')),
           h('div', { className: 'bsp-note' },
-            '胶囊位置 + 水平/垂直偏移决定收起后小圆点贴在哪；面板间距是窗口/最大化/居中时留出的边距；顶部留白＝窗口顶部让开宿主顶栏的高度（「自动」＝实测宿主顶栏，量不到按 48，也可手填 0~200）；层级基准＝和宿主页面的叠压顺序（越大越靠前）。自动清理＝某类日志超过上限时保留最近一半，在面板打开着的时候检查（列表右上角的「清理」随时可手动清空）。')),
+            '收起后的胶囊可以直接拖到任意位置（松手就记住，自动切到「自由」；拖回贴角就在上面选四角之一）。「自由」时水平/垂直坐标就是屏幕坐标，拖完会自己更新。面板间距是窗口/最大化/居中时留出的边距；顶部留白＝窗口顶部让开宿主顶栏的高度（「自动」＝实测宿主顶栏，量不到按 48，也可手填 0~200）；层级基准＝和宿主页面的叠压顺序（越大越靠前）。自动清理＝某类日志超过上限时保留最近一半，在面板打开着的时候检查（列表右上角的「清理」随时可手动清空）。')),
         h('div', { className: 'bsp-section' },
           h('div', { className: 'bsp-secTitle' }, '服务信息（只读）'),
           h(Field, { label: '版本' }, service?.version || '—'),
@@ -1360,6 +1422,12 @@ window.__ModuleLoader__.load({
      * 画面走长轮询（服务端把「等新帧」放在自己那边，静止时零流量），
      * 点击/滚动/打字转发给真浏览器；收起或暂停时告诉服务端停流（省 CPU）。
      */
+    /**
+     * 「开始/停帧」的当前值记在模块级（组件外）：切页签、收起面板再展开都会重挂 LivePane，
+     * 记在这里回来就自动续上，不用用户再点一次「开始」（0.8.3）。null = 本页还没决定过，看「打开即取帧」。
+     */
+    let liveStartedMemory = null;
+
     function LivePane({ paused, settings, onStreamingChange, onState }) {
       const [frame, setFrame] = React.useState(null); // 当前帧的 object URL
       const [meta, setMeta] = React.useState({ w: 0, h: 0 });
@@ -1369,7 +1437,11 @@ window.__ModuleLoader__.load({
       const [actionErr, setActionErr] = React.useState(null);
       const error = actionErr ?? frameErr;
       const [addr, setAddr] = React.useState('');
-      const [started, setStarted] = React.useState(settings.autoStream !== false);
+      // 初值优先用模块级记忆（上次是开着就续上），本页还没决定过才看「打开即取帧」。
+      const [started, setStarted] = React.useState(() => liveStartedMemory ?? (settings.autoStream !== false));
+      React.useEffect(() => {
+        liveStartedMemory = started;
+      }, [started]);
       const [full, setFull] = React.useState(false);
       /** 提交过一次跳转就 +1，让地址/标题/会话号立刻同步（不等下一秒轮询）。 */
       const [refresh, setRefresh] = React.useState(0);
@@ -1679,6 +1751,13 @@ window.__ModuleLoader__.load({
       const [now, setNow] = React.useState(() => Date.now());
       const card = React.useRef(null);
       const rail = React.useRef(null);
+      const pill = React.useRef(null);
+      // 胶囊拖动：拖动期间用 dragPos 接管位置（松手才换算成设置 + 落盘），dragged 用来吃掉拖动后的那次 click。
+      const [dragPos, setDragPos] = React.useState(null);
+      const [pillSize, setPillSize] = React.useState(null);
+      const dragged = React.useRef(false);
+      // 视口变化时 bump 一下，逼胶囊按新视口重排（自由坐标可能落在屏幕外）。
+      const [, setTick] = React.useState(0);
       const live = React.useRef(null); // 最近一次的 live.json（设置区读 options 用，不进 state）
       // 夹取要用当前「面板间距」，但不该让 resize/拖拽的 effect 每次改设置都重建 ⇒ 用 ref 跟。
       const settingsRef = React.useRef(settings);
@@ -1715,14 +1794,90 @@ window.__ModuleLoader__.load({
         setSaveNote({ tone: 'dirty', text: '已恢复默认值 —— 点「保存」后正式生效（窗口外观已经先按默认显示了）。' });
       };
 
+      /**
+       * 把胶囊摆到某个屏幕坐标（拖动松手时用）：改成「自由」模式 + 记坐标，**立刻落盘**。
+       * 只把这三个字段并进「已保存的那份」，别的未保存草稿继续留着不动 —— 拖一下不该替用户点保存。
+       */
+      const placePill = (point) => {
+        const patch = { pillPos: 'free', pillX: point.x, pillY: point.y };
+        setSettings((prev) => normalizeSettings({ ...prev, ...patch }));
+        const base = normalizeSettings({ ...saved.current, ...patch });
+        saved.current = base;
+        if (writeStore(STORAGE_KEY, { settings: base, window: base.remember ? geometry : null })) {
+          setSaveNote({ tone: 'ok', text: `✓ 胶囊位置已记住（自由位置 ${point.x} / ${point.y}）` });
+        } else {
+          setSaveNote({ tone: 'err', text: '位置没能写入本地存储：刷新后会回到原处（无痕模式或站点策略）。' });
+        }
+      };
+
+      /** 拖动胶囊：指针事件 + 捕获，实时只改 dragPos，松手才换算落盘；位移 ≤ DRAG_SLOP 当点击。 */
+      const startPillDrag = (event) => {
+        if (event.button !== 0) return;
+        const node = pill.current;
+        const box = node?.getBoundingClientRect?.();
+        if (!node || !box) return;
+        const size = { w: Math.round(box.width), h: Math.round(box.height) };
+        const grab = { x: event.clientX - box.left, y: event.clientY - box.top };
+        const from = { x: event.clientX, y: event.clientY };
+        const limit = (point) => ({
+          x: fitAxis(Math.round(point.x), viewport().w, size.w),
+          y: fitAxis(Math.round(point.y), viewport().h, size.h),
+        });
+        let moved = false;
+        let frameId = 0;
+        let next = null;
+        const flush = () => {
+          frameId = 0;
+          if (next) setDragPos(next);
+        };
+        const onMove = (moveEvent) => {
+          if (!moved && Math.hypot(moveEvent.clientX - from.x, moveEvent.clientY - from.y) > DRAG_SLOP) moved = true;
+          if (!moved) return;
+          next = limit({ x: moveEvent.clientX - grab.x, y: moveEvent.clientY - grab.y });
+          if (!frameId) frameId = requestAnimationFrame(flush);
+        };
+        const onEnd = () => {
+          if (frameId) cancelAnimationFrame(frameId);
+          node.removeEventListener('pointermove', onMove);
+          node.removeEventListener('pointerup', onEnd);
+          node.removeEventListener('pointercancel', onEnd);
+          if (node.hasPointerCapture?.(event.pointerId)) node.releasePointerCapture(event.pointerId);
+          document.body.style.userSelect = '';
+          setDragPos(null);
+          if (!moved) return;
+          dragged.current = true;
+          placePill(next ?? limit({ x: box.left, y: box.top }));
+        };
+        // 拖动期间别选中文字；指针捕获让指针移出窗口也不丢事件（触摸/触控笔一并支持）。
+        document.body.style.userSelect = 'none';
+        node.addEventListener('pointermove', onMove);
+        node.addEventListener('pointerup', onEnd);
+        node.addEventListener('pointercancel', onEnd);
+        try {
+          node.setPointerCapture(event.pointerId);
+        } catch { /* 老浏览器没有指针捕获：退回节点上的普通事件 */ }
+      };
+
       useStyles();
 
-      // 视口变了（浏览器窗口缩放）就把窗口拉回可见范围。
+      // 视口变了（浏览器窗口缩放）就把窗口拉回可见范围，并让胶囊按新视口重排。
       React.useEffect(() => {
-        const onResize = () => setGeometry((prev) => clampRect(prev, viewport(), settingsRef.current.panelGap, insetRef.current));
+        const onResize = () => {
+          setGeometry((prev) => clampRect(prev, viewport(), settingsRef.current.panelGap, insetRef.current));
+          setTick((n) => n + 1);
+        };
         window.addEventListener('resize', onResize);
         return () => window.removeEventListener('resize', onResize);
       }, []);
+
+      // 量一次胶囊尺寸（有则留着，收起状态才有节点）：自由坐标按视口夹取要用它。
+      React.useEffect(() => {
+        const node = pill.current;
+        if (!node) return;
+        const w = node.offsetWidth;
+        const h = node.offsetHeight;
+        setPillSize((prev) => (prev && prev.w === w && prev.h === h ? prev : { w, h }));
+      });
 
       // 顶部留白：打开面板（或改了这项设置）时量一次宿主顶栏，把窗口拉回它下面。
       React.useEffect(() => {
@@ -1853,17 +2008,29 @@ window.__ModuleLoader__.load({
       ].join('\n');
 
       if (!open) {
+        const bounds = viewport();
         return h('button', {
           type: 'button',
-          className: 'bsp-pill',
+          ref: pill,
+          className: `bsp-pill${dragPos ? ' bsp-grabbing' : ''}`,
           style: {
-            ...pillAnchor(settings.pillPos, settings.pillX, settings.pillY),
+            ...(dragPos
+              ? { left: `${dragPos.x}px`, top: `${dragPos.y}px`, right: 'auto', bottom: 'auto' }
+              : pillAnchor(settings.pillPos, settings.pillX, settings.pillY, bounds, pillSize)),
             ...appearanceStyle(settings, 'pill'),
             zIndex: Number(settings.zBase),
           },
-          title: dirty ? `${pillTitle}\n设置有未保存的改动` : pillTitle,
+          title: dirty ? `${pillTitle}\n设置有未保存的改动` : `${pillTitle}\n可以直接拖到任意位置`,
           'aria-label': '打开浏览器服务面板',
-          onClick: () => setOpen(true),
+          onPointerDown: startPillDrag,
+          onClick: () => {
+            // 拖完会跟着来一次 click：吃掉它，别顺手把面板弹开。
+            if (dragged.current) {
+              dragged.current = false;
+              return;
+            }
+            setOpen(true);
+          },
         },
           h('span', { className: `bsp-dot ${snapshot.error ? 'bad' : badge ? 'warn' : 'on'}` }),
           h('span', { className: 'bsp-pillName' }, '浏览器'),
@@ -2114,6 +2281,8 @@ window.__ModuleLoader__.load({
                       saveNote,
                       onSave: saveSettings,
                       onDefaults: applyDefaults,
+                      // 切到「自由」时的起点：按当前角 + 偏移 + 实测尺寸换算，胶囊不会跳。
+                      pillPoint: () => pillPoint(settings, pillSize, viewport()),
                     })
                   : pane),
             h('div', { className: 'bsp-foot' },
@@ -2150,7 +2319,7 @@ window.__ModuleLoader__.load({
     exports.inject = ['slots'];
     exports.apply = apply;
     // 纯函数导出：给隔离验收脚本断言几何夹取、设置规整与坐标映射（浏览器侧不会用到）。
-    exports.internals = { clampInt, clampRect, topInsetFromBoxes, resolveTopInset, ratioOf, collectTopBars, normalizeSettings, mapPoint, relTime, isAlarm, pillAnchor, withScheme, appearanceStyle, borderOf, DEFAULT_WINDOW, STORAGE_KEY, DEFAULT_SETTINGS };
+    exports.internals = { clampInt, clampRect, fitAxis, topInsetFromBoxes, resolveTopInset, ratioOf, collectTopBars, normalizeSettings, mapPoint, relTime, isAlarm, pillAnchor, pillPoint, withScheme, appearanceStyle, borderOf, DEFAULT_WINDOW, STORAGE_KEY, DEFAULT_SETTINGS };
     return exports;
   },
 });

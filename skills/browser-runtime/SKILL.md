@@ -198,6 +198,8 @@ dsh --profile web --dump-config | grep -E 'browserProvider|patched by|not found'
 - 三道闸：只认回环地址（非本机 **403**「实时窗口只对本机开放」）、方法白名单（**405**）、写路由同源校验（跨站 **403**；没有 `Origin`/`Referer` 的请求放行）。
 - 没有 `webServer` 的宿主不挂这些路由，插件照常工作（provider 不受影响）。
 - 写路由与 `panel.json` 的服务信息块都在宿主半边 ⇒ 改完**必须重启 DSH**；客户端半边（`plugin/client.js`）刷新页面即可。
+- 胶囊位置（**客户端半边**，0.8.3 起）：设置里「胶囊位置」五档（左上/右上/左下/右下/**自由**）+ 水平/垂直偏移（贴角档 0–400 px；自由档按屏幕坐标 0–10000，两行改名「水平/垂直坐标」）；胶囊可**直接用鼠标拖**到任意位置（`pointerdown` + 指针捕获 + rAF，拖动期抓手光标），松手自动切「自由」并**立即写** `localStorage`（只合并 `pillPos`/`pillX`/`pillY`，不动其他未保存草稿），位移 ≤ 4px（`DRAG_SLOP`）仍算点击、照旧展开面板；视口变小时渲染按屏内夹回但**只夹不改存**。只有 `plugin/client.js` ⇒ 改完刷新页面即可。
+- 取帧与清晰度（**客户端半边**，0.8.3 起）：「开始/停帧」状态记在组件外（`liveStartedMemory`）——取过帧后切到别的入口（操作/控制台/网络/设置）再切回「网页」会**自动续上，不用再点「开始」**；手动「停帧」后回来仍是停的，首开仍看「打开即取帧」设置。取帧「最大边」**默认 1920**（0.8.2 及以前默认 1280，画面先缩到 1280×720 再放大、看着糊；0.8.3 起与默认视口 1920×1080 同长边）。
 
 ## 10. 改完代码 / 配置怎么验
 
@@ -205,7 +207,7 @@ dsh --profile web --dump-config | grep -E 'browserProvider|patched by|not found'
 cd /home/node/DSH/dsh-browser-service
 node scripts/verify-daemon.mjs     # 守护进程 + CLI：35/35
 node scripts/verify-provider.mjs   # provider + P7 分辨率 + 随包技能提供者：125 通过 0 失败
-node scripts/verify-bundle.mjs     # 组合包安装 + 客户端半边（5c 24 项）+ 随包技能：70/70
+node scripts/verify-bundle.mjs     # 组合包安装 + 客户端半边（5c 29 项）+ 随包技能：75/75
 node scripts/verify-data.mjs       # 观测面 + 实时窗口（六条路由与三道闸）：86 通过 0 失败
 node scripts/verify-matrix.mjs --dsh dsh --smoke   # DSH 版本矩阵：4 个宿主版本 × 12 项
 node bin/browsersvc.mjs status     # running/healthy + wsEndpoint 带 token

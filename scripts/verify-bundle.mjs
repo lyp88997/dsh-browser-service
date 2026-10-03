@@ -346,6 +346,28 @@ console.log('5c. 客户端半边（网页面板）');
     c.pill?.custom?.right === '30px' && c.pill?.custom?.top === '60px'
       && c.pill?.custom?.left === 'auto' && c.pill?.custom?.bottom === 'auto',
     JSON.stringify(c.pill?.custom));
+  check('胶囊「自由」位置：直接给 left/top，超出视口按自身尺寸夹回屏内（存储范围放宽到 0~10000）',
+    c.pill?.free?.left === '900px' && c.pill?.free?.top === '500px'
+      && c.pill?.free?.right === 'auto' && c.pill?.free?.bottom === 'auto'
+      && c.pill?.freeFit?.left === '1050px' && c.pill?.freeFit?.top === '769px'
+      && c.pillFreeClamp === 9999,
+    JSON.stringify({ free: c.pill?.free, freeFit: c.pill?.freeFit, clamp: c.pillFreeClamp }));
+  check('胶囊起点换算：自由读坐标、贴角按角 + 偏移 + 尺寸算、越界夹回（切到自由/起拖都不跳）',
+    c.pillPoint?.free?.x === 900 && c.pillPoint?.free?.y === 500
+      && c.pillPoint?.freeFar?.x === 1050 && c.pillPoint?.freeFar?.y === 769
+      && c.pillPoint?.lt?.x === 15 && c.pillPoint?.lt?.y === 48
+      && c.pillPoint?.rb?.x === 1035 && c.pillPoint?.rb?.y === 721,
+    JSON.stringify(c.pillPoint));
+  check('胶囊可拖动接线：指针事件 + 指针捕获 + 拖动阈值 + 自由档 + 拖动期抓手/禁触摸滚动',
+    c.dragWiring?.pointerDown === true && c.dragWiring?.capture === true && c.dragWiring?.release === true
+      && c.dragWiring?.freeMode === true && c.dragWiring?.slop === true
+      && c.dragWiring?.grabbing === true && c.dragWiring?.touchAction === true,
+    JSON.stringify(c.dragWiring));
+  check('实时画面「最大边」默认提到 1920（0.8.3：与默认视口同长边，不再先缩后放）',
+    c.defaultMaxWidth === 1920, JSON.stringify(c.defaultMaxWidth));
+  check('取帧开关跨页签记忆：切回「网页」自动续上，不用再点「开始」（组件外记忆 + 默认值看「打开即取帧」 + 变化回写）',
+    c.resumeWiring?.memory === true && c.resumeWiring?.init === true && c.resumeWiring?.keep === true,
+    JSON.stringify(c.resumeWiring));
   check('地址栏输入补协议（与宿主 normalizeUrl 同规则，空串不提交）',
     c.scheme?.bare === 'https://example.com' && c.scheme?.full === 'http://a' && c.scheme?.empty === '',
     JSON.stringify(c.scheme));

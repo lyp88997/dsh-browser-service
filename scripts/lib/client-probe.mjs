@@ -108,6 +108,8 @@ if (spec) {
       out.appearanceCustom = inner.normalizeSettings({ borderColor: '#AABBCC' }).borderColor;
       // 窗口几何两项新设置（v0.8.2）：顶部留白 / 贴合画面比例。
       out.geoDefaults = { topInset: inner.normalizeSettings({}).topInset, fitPicture: inner.normalizeSettings({}).fitPicture };
+      // 「最大边」默认值（v0.8.3 起 1920：与默认视口同长边，不再先缩后放）。
+      out.defaultMaxWidth = inner.normalizeSettings({}).maxWidth;
       out.geoClamp = {
         topInset: inner.normalizeSettings({ topInset: 9999 }).topInset,
         manual: inner.normalizeSettings({ topInset: 96 }).topInset,
@@ -127,7 +129,20 @@ if (spec) {
         rb: inner.pillAnchor('rb'),
         custom: inner.pillAnchor('rt', 30, 60),
         bad: inner.pillAnchor('nope'),
+        // 「自由」位置（v0.8.3）：直接给 left/top，给了视口 + 自身尺寸就夹进屏内。
+        free: inner.pillAnchor('free', 900, 500),
+        freeFit: inner.pillAnchor('free', 9000, 9000, { w: 1200, h: 800 }, { w: 150, h: 31 }),
       };
+    }
+    if (typeof inner?.pillPoint === 'function') {
+      // 切到「自由」/ 起拖时的起点换算：贴角按角 + 偏移 + 尺寸算，自由直接读坐标，越界夹回屏内。
+      out.pillPoint = {
+        free: inner.pillPoint({ pillPos: 'free', pillX: 900, pillY: 500 }, { w: 150, h: 31 }, { w: 1200, h: 800 }),
+        freeFar: inner.pillPoint({ pillPos: 'free', pillX: 9000, pillY: 9000 }, { w: 150, h: 31 }, { w: 1200, h: 800 }),
+        lt: inner.pillPoint({ pillPos: 'lt', pillX: 15, pillY: 48 }, { w: 150, h: 31 }, { w: 1200, h: 800 }),
+        rb: inner.pillPoint({ pillPos: 'rb', pillX: 15, pillY: 48 }, { w: 150, h: 31 }, { w: 1200, h: 800 }),
+      };
+      out.pillFreeClamp = inner.normalizeSettings({ pillPos: 'free', pillX: 9999, pillY: 9999 }).pillX;
     }
     if (typeof inner?.clampRect === 'function' && typeof inner?.resolveTopInset === 'function') {
       // 顶部留白（v0.8.2）：贴顶 + 够宽 + 高度合理里取最高的；量不到按 48；手填夹到 0~200。
@@ -180,6 +195,22 @@ out.requires = [...new Set((code.match(/require\(['"]([^'"]+)['"]\)/g) ?? []).ma
 out.liveRoutes = ['/browser-service/live.jpg', '/browser-service/live.json', '/browser-service/live'].filter((path) => code.includes(`'${path}'`));
 // 两条写路由（清日志 / 改分辨率）同理。
 out.writeRoutes = ['/browser-service/logs', '/browser-service/viewport'].filter((path) => code.includes(`'${path}'`));
+// 胶囊可拖动（v0.8.3）的接线：指针事件 + 捕获 + 拖动期禁用过渡 + 拖动判定阈值 + 「自由」档。
+out.dragWiring = {
+  pointerDown: /onPointerDown:\s*startPillDrag/.test(code),
+  capture: /setPointerCapture/.test(code),
+  release: /releasePointerCapture/.test(code),
+  freeMode: /'free'/.test(code) && /PILL_COORD_RANGE/.test(code),
+  slop: /DRAG_SLOP/.test(code),
+  grabbing: /bsp-grabbing/.test(code),
+  touchAction: /touch-action:none/.test(code),
+};
+// 取帧开关的跨页签记忆（v0.8.3）：状态存在组件外、初值看「打开即取帧」、每次变化回写——切回网页不用再点「开始」。
+out.resumeWiring = {
+  memory: /let liveStartedMemory/.test(code),
+  init: /liveStartedMemory\s*\?\?\s*\(settings\.autoStream !== false\)/.test(code),
+  keep: /liveStartedMemory = started/.test(code),
+};
 out.pkgName = pkgName;
 
 console.log(JSON.stringify(out));
