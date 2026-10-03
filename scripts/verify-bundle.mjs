@@ -106,6 +106,9 @@ console.log('1. 交付物形状（一个包）');
     && listed.includes('package/skills/browser-runtime/scripts/browse.mjs')
     && listed.includes('package/skills/browser-runtime/scripts/chromium-wrapper.sh'),
     listed.filter((p) => p.startsWith('package/skills/')).join(' , ') || '（一个都没有）');
+  check('tarball 含内置技能提供者（src/skill-provider.mjs 与 skills/ 一起发货）',
+    listed.includes('package/src/skill-provider.mjs') && listed.includes('package/src/skills.mjs'),
+    listed.filter((p) => p.startsWith('package/src/')).join(' , '));
 }
 
 // 2) 官方安装命令：包进依赖 + 层追加到 bundles
@@ -269,21 +272,43 @@ console.log('5c. 客户端半边（网页面板）');
   check('客户端半边导出可测的纯函数（几何夹取 / 设置规整 / 外观样式）',
     ['clampInt', 'clampRect', 'normalizeSettings', 'pillAnchor', 'withScheme', 'appearanceStyle'].every((name) => (c.internals ?? []).includes(name)),
     JSON.stringify(c.internals));
-  check('窗口几何夹取：超界收进视口、没记过位置时贴右下角',
+  check('窗口几何夹取：超界收进视口、没记过位置时摆正中',
     c.clamp?.oversize?.w === 800 && c.clamp?.oversize?.h === 600 && c.clamp?.oversize?.x === 0 && c.clamp?.oversize?.y === 0
       && c.clamp?.undersize?.w === 320 && c.clamp?.undersize?.h === 240
-      && c.clamp?.anchored?.x === 400 && c.clamp?.anchored?.y === 300,
+      && c.clamp?.anchored?.x === 200 && c.clamp?.anchored?.y === 150,
     JSON.stringify(c.clamp));
   check('窗口几何夹取认「面板间距」：可用区域扣掉两侧边距，落位不贴边',
     c.clamp?.margin?.w === 780 && c.clamp?.margin?.h === 580 && c.clamp?.margin?.x === 10 && c.clamp?.margin?.y === 10,
     JSON.stringify(c.clamp?.margin));
-  check('设置规整：越界夹取、非法入口回落网页、新键有默认值',
+  check('窗口几何夹取认「顶部留白」：窗口不许压到宿主顶栏，且竖直方向在留白之下居中',
+    c.clampTop?.none?.x === 200 && c.clampTop?.none?.y === 150
+      && c.clampTop?.auto?.x === 200 && c.clampTop?.auto?.y === 174
+      && c.clampTop?.pinned?.x === 10 && c.clampTop?.pinned?.y === 70,
+    JSON.stringify(c.clampTop));
+  check('顶部留白自动量：贴顶 + 够宽 + 高度合理里取最高的；量不到按 48；手填夹到 0~200',
+    c.topInset?.measured === 96 && c.topInset?.none === 0 && c.topInset?.auto === 48
+      && c.topInset?.manual === 120 && c.topInset?.clamped === 200 && c.topInset?.zero === 0,
+    JSON.stringify(c.topInset));
+  check('顶部留白上限生效：手填 60px 时窗口高度收在「视口 − 留白」以内，且不越下边界',
+    c.clampTop?.capped?.h === 520 && c.clampTop?.capped?.y === 70,
+    JSON.stringify(c.clampTop?.capped));
+  check('贴合画面比例：优先用真实帧尺寸、没帧按设置的分辨率、给不出就不锁比例',
+    c.ratio?.frame === '1920 / 1080' && c.ratio?.fallback === '1920 / 1080' && c.ratio?.bad === null,
+    JSON.stringify(c.ratio));
+  check('两项新设置（0.8.2）：顶部留白默认 auto（可手填 0~200）、贴合画面比例默认开',
+    c.geoDefaults?.topInset === 'auto' && c.geoDefaults?.fitPicture === true
+      && c.geoClamp?.topInset === 200 && c.geoClamp?.manual === 96
+      && c.geoClamp?.auto === 'auto' && c.geoClamp?.fitOff === false,
+    JSON.stringify({ defaults: c.geoDefaults, clamp: c.geoClamp }));
+  check('设置规整：越界夹取、非法入口回落网页、新键有默认值（含 0.8.2 的新默认：不自动取帧 / 1920×1080 / 40% 毛玻璃）',
     c.settings?.quality === 95 && c.settings?.maxWidth === 320 && c.settings?.pollMs === 500
       && c.settings?.lines === 200 && c.settings?.tab === 'live'
       && c.settings?.pillPos === 'lt' && c.settings?.autoClean === 0
-      && c.settings?.viewport === '1440x900' && c.settings?.pillX === 15 && c.settings?.pillY === 48
+      && c.settings?.viewport === '1920x1080' && c.settings?.pillX === 15 && c.settings?.pillY === 48
       && c.settings?.panelGap === 10 && c.settings?.zBase === 40
-      && c.settings?.borderColor === 'theme' && c.settings?.cardAlpha === 95 && c.settings?.glass === 'frost',
+      && c.settings?.borderColor === 'theme' && c.settings?.cardAlpha === 40 && c.settings?.glass === 'frost'
+      // autoStream 缺省必须走 DEFAULT_SETTINGS（旧写法 `source.autoStream !== false` 会让「没给」变成 true）
+      && c.settings?.autoStream === false,
     JSON.stringify(c.settings));
   check('窗口外观规整：颜色只认主题/无/6 位十六进制、不透明度夹到可读范围、未知玻璃档回落毛玻璃',
     c.appearanceClamp?.borderColor === 'theme' && c.appearanceClamp?.cardAlpha === 20
@@ -310,7 +335,7 @@ console.log('5c. 客户端半边（网页面板）');
   check('设置规整：像素量与分辨率档位越界一律拉回',
     c.settingsClamp?.pillX === 0 && c.settingsClamp?.pillY === 400
       && c.settingsClamp?.panelGap === 0 && c.settingsClamp?.zBase === 1
-      && c.settingsClamp?.viewport === '1440x900',
+      && c.settingsClamp?.viewport === '1920x1080',
     JSON.stringify(c.settingsClamp));
   check('胶囊四角定位只给对角两边的偏移、非法值回落左上',
     c.pill?.lt?.left === '15px' && c.pill?.lt?.top === '48px' && c.pill?.lt?.right === 'auto' && c.pill?.lt?.bottom === 'auto'
@@ -385,9 +410,34 @@ console.log('6. 随包全局技能（skills/ → 技能根目录）');
     JSON.stringify({ skillsDir: listed.skillsDir, states: [...new Set((listed.files ?? []).map((f) => f.state))] }));
 
   const pluginSource = readFileSync(join(installed, 'plugin', 'lib', 'index.js'), 'utf8');
-  check('插件启动时也会同步（apply 里调用 syncSkills + 两个配置项）',
-    /syncSkills\(\{/.test(pluginSource) && /syncSkills: Schema\.boolean\(\)\.default\(true\)/.test(pluginSource)
+  check('插件把随包技能注册成内置提供者（registerProvider + rank 600 + 默认开）',
+    /skillCtx\.skills\.registerProvider\(/.test(pluginSource)
+    && /createSkillsProvider\(/.test(pluginSource)
+    && /registerSkills: Schema\.boolean\(\)\.default\(true\)/.test(pluginSource)
+    && /syncSkills: Schema\.boolean\(\)\.default\(false\)/.test(pluginSource),
+    'index.js 里没有 registerProvider / registerSkills');
+  check('插件仍保留可选的落盘同步（syncSkills 打开时才写文件 + skillsDir 可配）',
+    /if \(config\.syncSkills === true\)/.test(pluginSource) && /syncSkills\(\{/.test(pluginSource)
     && /skillsDir: Schema\.string\(\)/.test(pluginSource));
+
+  // 撤销：只撤本包写过且没被改过的文件（0.8.2 起，落盘会盖住内置那份，要能干净撤回）
+  writeFileSync(edited, `${readFileSync(edited, 'utf8')}\n<!-- 又改了一次：撤销时应当保留 -->\n`);
+  const undoKept = call(['skills', '--uninstall', '--dir', skillsDir]);
+  check('--uninstall 保留用户改过的 1 个、撤掉其余 6 个（台账留在原地）',
+    undoKept.status === 0 && /删 6 · 保留 1/.test(undoKept.stdout ?? '')
+    && /被改过/.test(undoKept.stdout ?? '')
+    && readFileSync(edited, 'utf8').includes('撤销时应当保留')
+    && !existsSync(join(skillsDir, 'browser-runtime', 'scripts', 'browse.mjs'))
+    && existsSync(join(skillsDir, '.dsh-browser-service.skills.json')),
+    (undoKept.stdout ?? '').split('\n').slice(0, 3).join(' | '));
+
+  call(['skills', '--install', '--force', '--dir', skillsDir]);
+  const undoAll = call(['skills', '--uninstall', '--dir', skillsDir]);
+  check('--uninstall 撤净后删掉台账、不留空目录（技能回到只由内置提供者提供）',
+    undoAll.status === 0 && /删 7 · 保留 0/.test(undoAll.stdout ?? '')
+    && !existsSync(join(skillsDir, '.dsh-browser-service.skills.json'))
+    && !existsSync(join(skillsDir, 'browser')) && !existsSync(join(skillsDir, 'browser-runtime')),
+    (undoAll.stdout ?? '').split('\n').slice(0, 2).join(' | '));
 }
 
 // 7) 官方移除命令：依赖与层同时移除

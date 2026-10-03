@@ -11,6 +11,7 @@ import { createProvider } from './provider.js';
 import { LIVE_STATE_PATH, LOGS_PATH, PANEL_PATH, VIEWPORT_PATH, registerPanel } from './panel.js';
 import { SEAM_PACKAGE, TESTED_HOSTS, inspectSeam, readVersions, seamMismatchMessage } from './compat.js';
 import { PACKAGE_VERSION, defaultSkillsRoot, syncSkills } from '../../src/skills.mjs';
+import { BUNDLED_SKILL_RANK, PROVIDER_NAME as SKILL_PROVIDER_NAME, SKILL_NAMES, createSkillsProvider } from '../../src/skill-provider.mjs';
 
 export const name = 'browser-cdp';
 
@@ -50,8 +51,8 @@ export const Config = Schema.object({
    */
   captureNetwork: Schema.boolean().default(true),
   /** 会话视口尺寸（坐标点击的空间）。 */
-  viewportWidth: Schema.number().default(1440),
-  viewportHeight: Schema.number().default(900),
+  viewportWidth: Schema.number().default(1920),
+  viewportHeight: Schema.number().default(1080),
   /**
    * 本包自启守护进程时的空闲回收窗口（毫秒，默认 5 分钟，值会夹到 1000..24h）。最后一个会话
    * 关闭后插件会主动断开 CDP 连接，守护进程再空闲这么久就退出、把约 600 MB 还给系统；下次
@@ -71,15 +72,22 @@ export const Config = Schema.object({
    */
   cdpToken: Schema.string(),
   /**
-   * 目标技能根目录（本包随附的全局技能 `browser` / `browser-runtime` 会同步到这里）。
-   * 默认 `$DSH_HOME/skills`，即 DSH 的用户级技能目录（rank 400，仅次于 bundled）。
+   * 目标技能根目录（仅在 `syncSkills` 打开时用）。
+   * 默认 `$DSH_HOME/skills`，即 DSH 的用户级技能目录（rank 400）。
    */
   skillsDir: Schema.string().default(''),
   /**
-   * 是否在插件启动时把随包技能同步进 `skillsDir`（默认开）。同步带归属台账：只覆盖本包写过
-   * 且之后没人动过的文件，用户改过的或同名非本包的技能一律跳过并记一行日志。
+   * 是否把随包技能注册成 DSH 的**内置技能**（默认开）。走 `ctx.skills.registerProvider()`，
+   * `source:'bundled'` + rank 600，技能中心里显示成「系统内置」，和 dsh-univer-office 一样。
+   * 正文现读 `skills/<name>/SKILL.md`，改文件不用重启插件。
    */
-  syncSkills: Schema.boolean().default(true),
+  registerSkills: Schema.boolean().default(true),
+  /**
+   * 可选：把随包技能**同时落盘**到 `skillsDir`（默认关）。落盘是用户级（rank 400），
+   * 会在技能中心里盖住内置那份（同一层 rank 小的先赢）⇒ 只为「DSH 以外的工具也要读这些文件」时才开。
+   * 带归属台账：只覆盖本包写过且之后没人动过的文件，用户改过的或同名非本包的技能一律跳过。
+   */
+  syncSkills: Schema.boolean().default(false),
   /**
    * 可选：截图/下载落盘的目录边界。不配置时取系统 Downloads 目录（`XDG_DOWNLOAD_DIR` → 家目录下
    * 存在的 `Downloads`/`下载`/`下載` → `~/Downloads`），与内置 provider 同语义。
@@ -97,11 +105,37 @@ function runCommand(command, timeoutMs) {
   });
 }
 
+/**
+ * 把随包技能注册成 DSH 的内置技能（默认开）。与浏览器接缝无关：接缝坏了、provider 没注册成，
+ * 这两份技能在技能中心里照旧是内置可见、照旧可加载 —— 所以放在 apply 的最前面做。
+ * 宿主没有 `skills` 服务（老 DSH / 自定义 harness）时只记一行日志，绝不影响 provider。
+ */
+function registerBundledSkills(ctx, config) {
+  if (config.registerSkills === false) return;
+  if (typeof ctx.inject !== 'function') {
+    ctx.logger?.info?.('browser-cdp: 宿主 ctx 没有 inject，跳过内置技能注册（provider 不受影响）');
+    return;
+  }
+  ctx.inject(['skills'], (skillCtx) => {
+    if (typeof skillCtx.skills?.registerProvider !== 'function') {
+      skillCtx.logger?.warn?.('browser-cdp: 宿主没有 ctx.skills.registerProvider，内置技能未注册');
+      return;
+    }
+    const dispose = skillCtx.skills.registerProvider(() => createSkillsProvider({ log: skillCtx.logger }));
+    skillCtx.effect(() => () => dispose(), 'browser-cdp: bundled skills provider');
+    skillCtx.logger?.info?.(
+      `browser-cdp: 已注册内置技能 "${SKILL_PROVIDER_NAME}"（${SKILL_NAMES.join(' / ')}；source=bundled，rank=${BUNDLED_SKILL_RANK}）`,
+    );
+  });
+}
+
 export async function apply(ctx, config) {
-  // 随包全局技能：DSH 的技能发现只认磁盘目录（`$DSH_HOME/skills` 等），package.json 的 dsh 清单里
-  // 没有技能位 ⇒ 想让「装完就有全局技能」只能把随包 skills/ 落到技能根目录。带归属台账，用户改过的
-  // 文件一律不动；这一步失败也只记日志，绝不影响下面的 provider。
-  if (config.syncSkills !== false) {
+  // 内置技能：与接缝无关，先注册（详见 registerBundledSkills）。
+  registerBundledSkills(ctx, config);
+
+  // 可选：把同一批技能落盘到技能根目录（默认关）。落盘是用户级身份（rank 400），会在技能中心里
+  // 盖住上面的内置那份（同一层 rank 小的先赢）；只有「DSH 以外的工具也要读这些文件」时才该打开。
+  if (config.syncSkills === true) {
     try {
       const root = config.skillsDir ? resolve(config.skillsDir) : defaultSkillsRoot();
       const result = syncSkills({ root, version: PACKAGE_VERSION });

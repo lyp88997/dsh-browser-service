@@ -821,6 +821,9 @@ try {
   const defaults = Config({});
   check('maxTabs 默认 5', defaults.maxTabs === 5, String(defaults.maxTabs));
   check('idleMs 默认 300000（5 分钟）', defaults.idleMs === 300_000, String(defaults.idleMs));
+  check('viewportWidth/Height 默认 1920×1080（0.8.2 起）',
+    defaults.viewportWidth === 1920 && defaults.viewportHeight === 1080,
+    `${defaults.viewportWidth}×${defaults.viewportHeight}`);
   const withIdle = defaultAutoStartCommand({ idleMs: 300_000 });
   check('默认自启命令带上 --idle-ms（idleMs 可配）', / start --idle-ms=300000$/.test(withIdle), String(withIdle));
   check('idleMs 越界被夹到 1000..24h（不让自启直接失败）',
@@ -829,6 +832,43 @@ try {
   check('不配 idleMs 时不带该参数（保持向后兼容）', / start$/.test(defaultAutoStartCommand()), String(defaultAutoStartCommand()));
 }
 
+
+// ── 随包技能：内置提供者（0.8.2 起，技能中心显示「系统内置」）──────────────────
+{
+  console.log('\n随包技能提供者（bundled）');
+  const { createSkillsProvider, BUNDLED_SKILL_RANK, PROVIDER_NAME, SKILL_NAMES, readSkill } = await import('../src/skill-provider.mjs');
+  const provider = createSkillsProvider();
+  const candidates = await provider.list();
+  check('list() 返回两份随包技能', candidates.length === 2
+    && SKILL_NAMES.every((n) => candidates.some((c) => c.name === n)),
+    candidates.map((c) => c.name).join(','));
+  check('候选身份＝内置（source=bundled，rank=BUNDLED_SKILL_RANK=600）',
+    candidates.every((c) => c.source === 'bundled' && c.rank === BUNDLED_SKILL_RANK && c.provider === PROVIDER_NAME && PROVIDER_NAME === provider.name),
+    JSON.stringify(candidates.map((c) => [c.source, c.rank])));
+  check('候选自带可定位的 resourceBase 目录',
+    candidates.every((c) => c.resourceBase?.kind === 'directory' && existsSync(c.resourceBase.path) && statSync(c.resourceBase.path).isDirectory()),
+    JSON.stringify(candidates.map((c) => c.resourceBase?.path)));
+  check('候选形状满足 dsh-skill 校验（名字/描述/invocation）',
+    candidates.every((c) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(c.name)
+      && typeof c.description === 'string' && c.description.length > 0
+      && typeof c.invocation?.modelInvocable === 'boolean' && typeof c.invocation?.userInvocable === 'boolean'),
+    JSON.stringify(candidates.map((c) => [c.name, c.invocation])));
+  const runtime = candidates.find((c) => c.name === 'browser-runtime');
+  check('browser-runtime 保持 disable-model-invocation（模型不自动调用）',
+    runtime?.invocation.modelInvocable === false && runtime?.invocation.userInvocable === true,
+    JSON.stringify(runtime?.invocation));
+  const definition = await provider.get(candidates[0]);
+  check('get() 返回带正文的完整定义且正文已剥掉 frontmatter',
+    typeof definition.content === 'string' && definition.content.length > 0
+      && !definition.content.startsWith('---') && definition.source === 'bundled'
+      && readSkill(candidates[0].name).skill.content === definition.content,
+    `bytes=${definition.content?.length}`);
+  const broken = await createSkillsProvider({ names: ['没有这个技能'] }).list();
+  check('读不到的技能不进候选（只留一行日志，不抛）', broken.length === 0, JSON.stringify(broken));
+  check('Config 默认：注册内置技能开、落盘关（落盘会盖住内置那份）',
+    (await import('../plugin/lib/index.js')).Config({}).registerSkills === true
+    && (await import('../plugin/lib/index.js')).Config({}).syncSkills === false);
+}
 
 console.log(`\n结果：${passed} 通过，${failures.length} 失败${failures.length ? ` →\n  - ${failures.join('\n  - ')}` : ''}`);
 process.exit(failures.length === 0 ? 0 : 1);

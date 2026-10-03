@@ -3,6 +3,9 @@
 [![npm version](https://img.shields.io/npm/v/dsh-browser-service)](https://www.npmjs.com/package/dsh-browser-service)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![node](https://img.shields.io/badge/node-%3E%3D22.19-brightgreen)
+![browser tools](https://img.shields.io/badge/browser__tools-33-informational)
+![no root](https://img.shields.io/badge/root-not%20required-success)
+![verification](https://img.shields.io/badge/verification-35%2F125%2F70%2F86-success)
 
 **给 DSH 一个能跑在无 root、无 GUI 容器里的浏览器。** 一个包、一条 `dsh plugin add` 装完即用：单例 CDP 守护进程（用户态 `chrome-headless-shell`，只绑回环、带 Bearer token 门）+ 完整的 33 个 `browser_*` 工具面 + `ctx.browser` 接缝的 `cdp-daemon` provider + 一个网页浮动窗口（实时画面可点可打字）+ 两份随包全局技能。不需要 Electron、不需要 GUI 库、不需要 root、没有构建步骤。
 
@@ -10,6 +13,38 @@
 > ```bash
 > dsh plugin --profile web add dsh-browser-service@latest   # then restart DSH
 > ```
+
+---
+
+## 界面预览
+
+**一处入口，一个窗口。** 装完插件、重启一次 DSH，页面左上角就多出一枚小胶囊（贴哪个角、偏多少都能改）。点开就是浏览器窗口：左边一竖排入口（网页 / 操作 / 控制台 / 网络 / 设置），中间是**能点、能滚、能打字的实时画面**，右下角能拖宽窄，标题栏能拖、双击能最大化。
+
+| 实时画面（默认入口）：能点、能滚、能打字 | 在真 DSH 界面里：居中、贴合画面比例、没有黑边 |
+|---|---|
+| ![实时画面](https://raw.githubusercontent.com/lyp88997/dsh-browser-service/main/docs/images/panel-live.jpg) | ![真机效果](https://raw.githubusercontent.com/lyp88997/dsh-browser-service/main/docs/images/panel-real.jpg) |
+
+| 设置区：分辨率、顶部留白、胶囊偏移、窗口外观 | 网络日志：手动清理 + 自动清理上限 | 收起后的胶囊：位置与外观都跟随设置 |
+|---|---|---|
+| ![设置区](https://raw.githubusercontent.com/lyp88997/dsh-browser-service/main/docs/images/panel-settings.jpg) | ![网络日志](https://raw.githubusercontent.com/lyp88997/dsh-browser-service/main/docs/images/panel-logs.jpg) | ![胶囊](https://raw.githubusercontent.com/lyp88997/dsh-browser-service/main/docs/images/panel-pill.jpg) |
+
+<details>
+<summary>为什么大屏页面也能看清（0.8.2 修掉的「画面糊」）</summary>
+
+<br>
+
+取帧曾经漏发 `maxh`，被服务端当成 0 夹到下限 240，于是 1920×1080 的页面被等比压进 `max×240` 的小框、再被界面放大。0.8.2 起：缺字段沿用当前值、**最大边同时封顶宽高**、大屏页面按原尺寸下发。
+
+![清晰帧](https://raw.githubusercontent.com/lyp88997/dsh-browser-service/main/docs/images/panel-sharp.jpg)
+
+</details>
+
+## 目录
+
+- [这是什么 / 它解决什么问题](#这是什么--它解决什么问题) ｜ [安装](#安装) ｜ [快速开始](#快速开始起守护进程)
+- [CLI 参考](#cli-参考browsersvc) ｜ [工具参考](#工具参考33-个-browser_) ｜ [网页面板与实时窗口](#网页面板与实时窗口)
+- [随包技能](#随包技能技能中心里显示系统内置) ｜ [配置](#配置) ｜ [观测与状态文件](#观测与状态文件)
+- [环境要求与兼容性](#环境要求与兼容性) ｜ [FAQ](#faq) ｜ [更新记录](#更新记录) ｜ [文档](#文档)
 
 ## 这是什么 / 它解决什么问题
 
@@ -27,8 +62,8 @@
 dsh plugin --profile web add dsh-browser-service@latest
 
 # 钉版本 / 离线分发（同一个包）：Release 资产或本地 tarball
-#   dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.8.1/dsh-browser-service-0.8.1.tgz
-#   dsh plugin --profile web add ./dsh-browser-service-0.8.1.tgz
+#   dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/download/v0.8.2/dsh-browser-service-0.8.2.tgz
+#   dsh plugin --profile web add ./dsh-browser-service-0.8.2.tgz
 
 # 然后重启 DSH（插件在 boot 时 import，热重载不可靠），再校验组合：
 dsh --profile web --dump-config | grep -E 'browserProvider|# == dsh-browser-service|not found'
@@ -41,7 +76,7 @@ dsh --profile web --dump-config | grep -E 'browserProvider|# == dsh-browser-serv
 - **33 个 `browser_*` 工具**（`id: tool-browser`）：工具面与接缝来自本包依赖 `dsh-builtin-browser`，经本包 `./browser` / `./tool-browser` 转出口暴露（`plugin/shims/`）。
 - **`cdp-daemon` provider**：接到自建守护进程，首次用浏览器时用**本包自带**的 `bin/browsersvc.mjs start` 自动拉起。
 - **网页浮动窗口**：实时画面（可点/滚/打字/地址栏）、操作/控制台/网络日志、窗口外观与设置。
-- **两份随包全局技能**：`browser`、`browser-runtime`（见「随包全局技能」）。
+- **两份随包技能**：`browser`、`browser-runtime`，由插件注册的**内置技能提供者**提供，技能中心里显示「系统内置」。
 
 **三条不要做的事**
 
@@ -145,7 +180,7 @@ node bin/browsersvc.mjs start \
 | `network [--lines=40] [--json]` | **网络请求**（method/url/状态码/耗时，不记头与体）——`<root>/network.jsonl` |
 | `har [--session=s1] [--out=file]` | 会话关闭后落盘的 **HAR**（`<root>/har/`，只留最近 10 份），`--out` 复制出去 |
 | `cookies [--url=…] [--json\|--export=file\|--import=file]` | **cookie + localStorage** 导出/注入到文件（`--export` 0600 且拒绝覆盖；`--import` 需有活会话） |
-| `skills [--install] [--force] [--dir=…] [--json]` | **随包全局技能**：不带 `--install` 只报每个文件的状态，带上就落盘（默认 `$DSH_HOME/skills`）——见「随包全局技能」 |
+| `skills [--install] [--uninstall] [--force] [--dir=…] [--json]` | **随包技能**：不带 `--install`/`--uninstall` 只报每个文件的状态；`--install` 落盘（可选，默认 `$DSH_HOME/skills`）；`--uninstall` 撤掉落盘那份——见「随包技能」 |
 
 参数：`--root` `--port`（0 = 自动择取）`--idle-ms` `--kernel` `--wrapper` `--user-data-dir` `--max-restarts` `--start-timeout` `--internal-port-base`，对应环境变量 `DSH_BROWSER_SVC_ROOT` / `DSH_BROWSER_SVC_PORT` / `DSH_BROWSER_SVC_IDLE_MS` / `DSH_BROWSER_CHROME` / `DSH_BROWSER_WRAPPER`，也可写进 `$ROOT/config.json`。优先级：**CLI > 环境变量 > config.json > 自动探测**。`skills` 另有 `--dir` / `--force` / `--json`。
 
@@ -223,8 +258,8 @@ node bin/browsersvc.mjs start \
 设置页第一段「窗口外观」，三项：
 
 - **边框颜色**：默认「跟随主题」，也可选「无边框」或蓝/紫/绿/琥珀/红/青六个预设色，或用取色器自定任意颜色——只放行预设色或 `#rrggbb` 形状，别的一律回落主题色（这些值会写进 CSS 变量，所以先卡一道）。
-- **背景不透明度**：40/60/80/95/100%，越低越透。用 `color-mix(in srgb, 主题底色 N%, transparent)`，所以**底色仍随暗/亮主题走，只改实心程度**，不会把界面调成怪色。
-- **玻璃效果**：关 / 毛玻璃（`backdrop-filter: blur(10px) saturate(1.15)`）/ 液态玻璃（`blur(18px) saturate(1.65)` 再加一道斜向高光与内圈描边光）。纯 CSS 近似，不做真折射；老浏览器上退化成半透明。
+- **背景不透明度**：40/60/80/95/100%，越低越透（**默认 40%**，0.8.2 起）。用 `color-mix(in srgb, 主题底色 N%, transparent)`，所以**底色仍随暗/亮主题走，只改实心程度**，不会把界面调成怪色。
+- **玻璃效果**：关 / **毛玻璃**（`backdrop-filter: blur(10px) saturate(1.15)`，**默认**）/ 液态玻璃（`blur(18px) saturate(1.65)` 再加一道斜向高光与内圈描边光）。纯 CSS 近似，不做真折射；老浏览器上退化成半透明。
 
 窗口和收起后的胶囊用的是**同一份外观**；**窗口「里面」也在同一份外观里**——标题栏、左侧入口竖排、底栏、列表吸顶条、保存栏都按同一个不透明度透出去，选了自定义边框色时这些分区的**分隔线**也用同色调一层浅的（45%）。「跟随主题」／「无边框」时内部分隔线保持宿主原本的细线，`无边框` **只**去掉最外圈那一条。
 
@@ -244,7 +279,7 @@ node bin/browsersvc.mjs start \
 直接把浏览器当前标签的画面流到卡片里，**你能看到的那个页面就是真页面**——在窗口里点按钮、滚轮滚动、键盘输入、地址栏回车跳转，都会被原样打进真浏览器；对话里助手的调用与你在窗口里的操作作用在同一个页面上。
 
 - **窗口播的是最近活跃会话的当前标签**：后端一个会话里可以有多个标签（`maxTabs` 默认 5，助手用 `browser_open` / `browser_switch_tab` 控制），窗口只显示 `session.active` 指向的那一个——也就是最近被打开/切换/操作的标签；面板目前没有切换标签的按钮，要换标签得让助手切（`live.json` 也暂不回标签清单）。
-- 取帧走 [`plugin/lib/liveview.mjs`](https://github.com/lyp88997/dsh-browser-service/blob/main/plugin/lib/liveview.mjs)：`Page.startScreencast`（JPEG，默认质量 85、长边上限 1280）经我们的回环代理下发，**只在画面变化时发帧**（静止时零流量，实测一帧约 6.8 KB）；操作走 `Input.dispatchMouseEvent`/`insertText`/`dispatchKeyEvent`/`mouseWheel`。画质与最大边由客户端按当前设置随取帧请求发下去（`?quality=&max=&maxh=`，客户端把「最大边」同时当作宽与高的上限，即**长边上限**；缺字段沿用当前值、越界由服务端夹到安全范围），改完下一次取帧即生效。
+- 取帧走 [`plugin/lib/liveview.mjs`](https://github.com/lyp88997/dsh-browser-service/blob/main/plugin/lib/liveview.mjs)：`Page.startScreencast`（JPEG，默认质量 70、长边上限 1280；质量默认值在 0.8.2 从 85 下调到 70）经我们的回环代理下发，**只在画面变化时发帧**（静止时零流量，实测一帧约 6.8 KB）；操作走 `Input.dispatchMouseEvent`/`insertText`/`dispatchKeyEvent`/`mouseWheel`。画质与最大边由客户端按当前设置随取帧请求发下去（`?quality=&max=&maxh=`，客户端把「最大边」同时当作宽与高的上限，即**长边上限**；缺字段沿用当前值、越界由服务端夹到安全范围），改完下一次取帧即生效。
   - 注意 CDP 是「等比缩到 `max × maxh` 的框里」，**只给 `max` 不给 `maxh` 会让大屏页面被压扁变小，画面看着就糊**（0.8.1 的 P7 修掉的真缺陷：缺 `maxh` 时高度上限被算成下限 240）。
 - **只对本机回环请求开放**：非回环来源 403，跨站 POST 403（校验 `origin`/`referer` 与 Host 同源），方法白名单 405。若你从别的机器直连 DSH Web，日志入口照常、实时窗口会被拦。
 - 省电：卡片收起/切换/暂停/页面不可见时客户端发 `DELETE` 停流；宿主半边 30 s 没收到取帧也自动停（`setInterval` 已 `unref`）。
@@ -263,15 +298,19 @@ node bin/browsersvc.mjs start \
 
 ### 设置里还能调什么（0.8.0 / 0.8.1 的 P5/P6/P7）
 
-- **画面质量**（40/55/70/85/95，默认 85）
+- **画面质量**（40/55/70/85/95，**默认 70**，0.8.2 起；0.8.1 及以前是 85）
 - **最大边**＝长边上限（480/800/1280/1600/1920，默认 1280，同时作为宽与高的封顶）
-- **浏览器窗口分辨率**（1280×720 / 1440×900 / 1600×900 / 1920×1080）：走 `POST /browser-service/viewport` 真改浏览器视口，已打开的页面会按新尺寸重排、之后新建的会话也用它，服务端夹在 640×360 ~ 3840×2160 之间；回执是 `✓ 已生效 W×H（已应用到 N 个页面）`
-- **打开即取帧**、**面板刷新间隔**（1/2.5/5/10 s）、**日志条数**（20/40/100/200）、**默认入口**
+- **浏览器窗口分辨率**（1280×720 / 1440×900 / 1600×900 / 1920×1080，**默认 1920×1080**，0.8.2 起；0.8.1 及以前是 1440×900）：走 `POST /browser-service/viewport` 真改浏览器视口，已打开的页面会按新尺寸重排、之后新建的会话也用它，服务端夹在 640×360 ~ 3840×2160 之间；回执是 `✓ 已生效 W×H（已应用到 N 个页面）`
+- **打开即取帧**（**默认关**，0.8.2 起；关掉时打开面板不取帧、不占 CPU/带宽，在「网页」入口点一下「开始」才取帧）、**面板刷新间隔**（1/2.5/5/10 s）、**日志条数**（20/40/100/200）、**默认入口**
 - **胶囊贴哪个角** + **水平/垂直偏移**（0–400 px，默认 15/48，按选中的角生效）
 - **面板间距**（0–64 px，默认 10——既是窗口贴边留白，也是自动收回可见范围时用的边距）
 - **层级基准**（1–2000，默认 40——窗口与胶囊相对宿主页面的叠压顺序，胶囊 = `zBase`、窗口 = `zBase + 1`）
+- **贴合画面比例**（默认**开**——舞台按画面比例撑高（真实帧尺寸优先，没帧时按上面的分辨率），卡片高度自动；开着时右下角手柄只调宽度，关掉才是自由拖宽高）
+- **顶部留白**（`'auto'` 或 0–200px，默认 **`'auto'`**——窗口顶部让开宿主顶栏的高度；「自动」＝实测宿主贴顶的固定/粘性条（量不到按 48），也可手填覆盖）
 - **日志自动清理上限**、**是否记住窗口位置与大小**
 - 只读的**当前生效服务信息**：版本、会话、CDP 地址、保存目录名、标签上限、空闲回收、控制台/网络录制开关、生效中的取帧参数与分辨率
+
+> **0.8.2** 把默认参数调成了：画面质量 **70**、打开即取帧 **关**、浏览器窗口分辨率 **1920×1080**、背景不透明度 **40%** + **毛玻璃**（宿主的 `viewportWidth`/`viewportHeight` 默认也同步改成 1920×1080），同批还做了**窗口几何三项**：贴合画面比例（默认开，去黑边）、顶部留白（默认自动，窗口让开宿主顶栏）、没记过位置时摆正中。**既有浏览器里已存过的设置不受影响**——默认值只在「从没存过这一项」时生效；想回到默认就在设置页点「恢复默认」再点「保存」。
 
 控制台与网络的录制开关属于**插件配置**（`captureConsole`/`captureNetwork`），改插件配置要重启 DSH。
 
@@ -294,37 +333,41 @@ node bin/browsersvc.mjs start \
 
 **半边归属决定生效方式**：改 `plugin/client.js`（界面、外观、保存按钮）**刷新页面即可**（Ctrl+F5）；改宿主半边（`plugin/lib/panel.js`、`plugin/lib/liveview.mjs`、`plugin/lib/provider.js`、`src/*`、`plugin/lib/index.js`）**必须重启 DSH**。窗口第一次在页面里出现也需要重启一次（客户端插件在启动时收集）。
 
-## 随包全局技能
+## 随包技能（技能中心里显示「系统内置」）
 
-包里带**两份全局技能**（`skills/`，共 7 个文件），装完插件会自动把它们同步到技能根目录，之后任何会话都能用：
+包里带**两份全局技能**（`skills/`，共 7 个文件），装完插件就在技能中心里以**系统内置**的身份出现，之后任何会话都能用：
 
 | 技能 | 讲什么 | 文件 |
 |---|---|---|
 | `browser` | **怎么用**：33 工具速查、实测的 `target` 语法、标准工作流、截图验证法、陷阱表 | `skills/browser/SKILL.md` |
 | `browser-runtime` | **怎么修**：`browsersvc` CLI 速查、安装/升级、状态文件与凭据门、排障表、非 root 重建用户态 Chromium 运行时 | `skills/browser-runtime/SKILL.md` + 同目录 `scripts/` 下的 5 个文件（`browse.mjs`、`chromium-wrapper.sh`、`fonts.conf`、`setup-libs.sh`、`verify-cjk.mjs`） |
 
-**为什么要把文件落盘**：DSH 的技能发现只认磁盘目录（项目 `.dsh/skills`、`$DSH_HOME/skills`、`~/.agents/skills`、宿主 bundled 目录），而 `package.json` 的 `dsh` 清单里没有技能位（`DshManifest` 只有 `bundle`/`profile`/`client`/`configTrees`/`sessionFormatMigration`/`moduleFallback`）⇒ 想让「装完就有全局技能」只能把随包文件写进技能根目录。
+**身份怎么来的（v0.8.2 起）**：插件用 DSH 的技能提供者接口注册它们——`ctx.skills.registerProvider()`，候选带 `source:'bundled'` 与 `rank:600`（`dsh-skill` 导出的 `BUNDLED_SKILL_RANK`），和 `dsh-univer-office` 的 `univer-skills` 是同一形态，技能中心据此显示成「系统内置」。技能正文是**现读** `skills/<name>/SKILL.md`（改文件不用重启 DSH），配置项 `registerSkills`（默认 `true`）可关。
 
-**同步机制**（`src/skills.mjs`，CLI 与插件共用同一份实现）：
+**默认不再落盘，以及为什么**：v0.8.1 走的是另一条路——把文件写进技能根目录，因为当时还没发现提供者接口。但 DSH 里**同一层的技能按 rank 升序、小的先赢**：磁盘那份是**用户级**（`$DSH_HOME/skills`，rank 400），会盖住插件注册的内置那份（rank 600），技能中心里就显示成「用户级技能」。所以 v0.8.2 起默认只走提供者，落盘改成可选（`syncSkills` 默认 `false`），只在「DSH 以外的工具也要读这些文件」时才打开。**已经落过盘的**：跑一次 `browsersvc skills --uninstall` 就退回内置身份（重启 DSH 后生效）。
 
-- **默认目标**：`$DSH_HOME/skills`（DSH 的**用户级**技能根，rank 400，仅次于宿主自带 bundled；DSH 未设 `DSH_HOME` 时回落 `~/.dsh/skills`）。可用配置 `skillsDir` 改，或 CLI 的 `--dir=` 指定。
+**落盘同步机制**（可选；`src/skills.mjs`，CLI 与插件共用同一份实现）：
+
+- **默认目标**：`$DSH_HOME/skills`（DSH 的**用户级**技能根；DSH 未设 `DSH_HOME` 时回落 `~/.dsh/skills`）。可用配置 `skillsDir` 改，或 CLI 的 `--dir=` 指定。
 - **归属台账**：目标目录里的 `.dsh-browser-service.skills.json` 记着「哪些文件是本包写的、当时是什么哈希」。于是逐个文件只有四种结果：
   - 目标不存在 → **装**；
   - 与源逐字节相同 → 记为我们的，**不动**；
   - 与台账里的旧哈希相同 → 是本包的旧版，**覆盖升级**；
   - 其它（你把文件改过，或磁盘上已有同名但不在台账里的文件）→ **跳过并告诉你原因**，要覆盖必须显式 `--force`。
 - **幂等**：没有需要写入的改动时不写盘、不更新台账。
-- **插件启动时自动同步**：`plugin/lib/index.js` 的 `apply()` 顶部（早于 provider 注册）执行，**失败只记一行日志，绝不影响 provider**。配置项 `syncSkills`（默认 `true`）可关。
+- **撤销**：`--uninstall` 只删台账里属于本包、且内容与本包写的那份逐字节相同的文件（你改过的保留并说明原因），撤净后连台账一起删、空目录也清掉。
+- **插件启动时也会同步**（仅在 `syncSkills: true` 时）：`plugin/lib/index.js` 的 `apply()` 里执行，**失败只记一行日志，绝不影响 provider**。
 - **CLI**：
 
 ```bash
-browsersvc skills                      # 列每个文件的状态：缺失 / 已最新 / 可升级 / 你改过 / 非本包，并给待处理数
-browsersvc skills --install            # 落盘（装 + 升级本包自己的旧版）
-browsersvc skills --install --force    # 连「你改过 / 非本包」的同名文件一起覆盖
+browsersvc skills                        # 列每个文件的状态（缺失/已最新/可升级/你改过/非本包）+ 待处理数 + 身份提示
+browsersvc skills --install              # 可选：落盘（装 + 升级本包自己的旧版）
+browsersvc skills --install --force      # 连「你改过 / 非本包」的同名文件一起覆盖
+browsersvc skills --uninstall            # 退回「系统内置」身份：撤掉落盘那份（不动你改过的）
 browsersvc skills --dir=/path/skills --json   # 换目标目录 / 给脚本消费
 ```
 
-装完提示「技能下次会话即可用（重启 DSH 最稳）」。
+装完提示「技能下次会话即可用（重启 DSH 最稳）」；落盘与不落盘，技能正文都来自 `skills/`，只有技能中心里的**身份**不同。
 
 ## 配置
 
@@ -343,14 +386,15 @@ browsersvc skills --dir=/path/skills --json   # 换目标目录 / 给脚本消�
 | `captureConsole` | `true` | 是否把页面控制台（`console.*` / `pageerror`）记进 `<root>/console.jsonl` |
 | `captureNetwork` | `true` | 是否把网络请求记进 `<root>/network.jsonl`，并按会话录 HAR（关掉就不录 HAR） |
 | `maxTabs` | `5` | 单个会话允许的最大标签页数（夹在 `1..50`）。超过时 `browser_open {newTab:true}` 报 `BROWSER_TAB_LIMIT`——每个标签页是一个独立渲染进程，实测约 +93 MB |
-| `viewportWidth` / `viewportHeight` | `1440` / `900` | 新页面视口（坐标点击的空间）。面板设置里的「浏览器窗口分辨率」可运行时改这一项 |
+| `viewportWidth` / `viewportHeight` | `1920` / `1080`（0.8.2 起；0.8.1 及以前 `1440` / `900`） | 新页面视口（坐标点击的空间）。面板设置里的「浏览器窗口分辨率」可运行时改这一项 |
 | `idleMs` | `300000`（5 分钟） | 本包**自启**守护进程时的空闲回收窗口（夹在 `1000..86400000`）。最后一个会话关闭后插件主动断开连接，守护进程再空闲这么久就退出、把内存还给系统。仅在使用默认 `autoStartCommand` 时生效 |
 | `autoStartCommand` | 空 = 用**本包自带**的 `bin/browsersvc.mjs start` | 可选：首次用浏览器时执行的命令；换端口/内核才需要填（自己填的话，`idleMs` 不会自动带上，要自己写 `--idle-ms`） |
 | `autoStartTimeoutMs` | `60000` | `autoStartCommand` 的执行超时 |
 | `cdpToken` | 空 | 一般不用填：留空时自动读 `<DSH_BROWSER_SVC_ROOT 或 $DSH_HOME/browser-service>/service.json` 里的 `token`（每次 attach 重读，守护进程重启换 token 也能跟上）。只有指向自建/非 browsersvc 的 CDP 端点时才需要显式给 |
 | `downloadDir` | 系统 Downloads 目录 | 截图/下载的 `savePath` 必须落在该目录内。不配置时与内置 provider 同语义：`XDG_DOWNLOAD_DIR`（存在才用）→ 家目录下存在的 `Downloads`/`下载`/`下載` → `~/Downloads`（首次写入时建出来）。要存进工作区/别处就显式填一个目录 |
-| `skillsDir` | 空 = `$DSH_HOME/skills` | 随包全局技能同步的目标技能根目录 |
-| `syncSkills` | `true` | 插件启动时是否把随包 `skills/` 同步进 `skillsDir`（带归属台账，你改过的文件不会被覆盖） |
+| `skillsDir` | 空 = `$DSH_HOME/skills` | 可选的落盘同步目标技能根目录（仅在 `syncSkills` 打开时用） |
+| `syncSkills` | `false`（0.8.2 起；0.8.1 是 `true`） | 插件启动时是否把随包 `skills/` 也**落盘**进 `skillsDir`。默认关：落盘是**用户级**技能（rank 400），会盖住插件注册的**内置**那份（rank 600，技能中心显示「系统内置」）。开启带归属台账，你改过的文件不会被覆盖 |
+| `registerSkills` | `true` | 是否把随包技能注册成 DSH 的**内置技能提供者**（`source:'bundled'`、rank 600，与 `dsh-univer-office` 同形态），技能中心里显示「系统内置」。关掉就只剩手动落盘那条路 |
 
 这些键的权威定义在 `plugin/lib/index.js` 的 `Config`（schemastery schema）——**改默认值必须同时改这里和本表**。
 
@@ -404,8 +448,8 @@ browsersvc skills --dir=/path/skills --json   # 换目标目录 / 给脚本消�
 
 ```bash
 node scripts/verify-daemon.mjs      # M1 守护进程 + CLI 防御：35/35
-node scripts/verify-provider.mjs    # M2 provider + P7 分辨率：116 通过，0 失败
-node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）+ 随包技能：61/61
+node scripts/verify-provider.mjs    # M2 provider + P7 分辨率 + 随包技能提供者：125 通过，0 失败
+node scripts/verify-bundle.mjs      # 组合包安装（官方 dsh plugin 流程）+ 随包技能：70/70
 node scripts/verify-data.mjs        # P3 观测面 + P4/P5 实时窗口 + P6 清理跳转 + P7 分辨率/偏移：86 通过，0 失败
 node scripts/verify-matrix.mjs --dsh <bin> --dsh <bin> --smoke   # 多版本 DSH 兼容矩阵（见上）
 ```
@@ -413,8 +457,8 @@ node scripts/verify-matrix.mjs --dsh <bin> --dsh <bin> --smoke   # 多版本 DSH
 | 套件 | 项数 | 覆盖 |
 |---|---|---|
 | `scripts/verify-daemon.mjs` | **35/35** | 守护进程启停/重启、token 与 401/403 凭据门、只绑回环、上下文隔离、崩溃重启、空闲退出、配置校验、启动失败不留孤儿、`stop` 身份校验、同一连接上的后续请求不免检（F27） |
-| `scripts/verify-provider.mjs` | **116 通过 / 0 失败** | 33 个工具的行为与边界（含 `execute`/`a11y`/`scrape`/`form`/`screenshot`/`download`/`auth`）、会话隔离与复活、保存路径准入与默认保存目录（D1）、代理对截断、**P1：`maxTabs` 上限（拒绝后不留半开页）、无会话时释放连接（守护进程按 `idleMs` 回收 + 自愈）、配置默认值** → **P7：窗口分辨率 `setViewport`（配置初值、新页面按配置打开、改尺寸后真页面重排、新会话沿用、越界夹取、非法值报 `BROWSER_VIEWPORT_INVALID`）** |
-| `scripts/verify-bundle.mjs` | **61/61** | 在一次性隔离 `DSH_HOME` 里跑官方 `add` → `--dump-config` → 转出口形状比对 → **P2：宿主 peer 解析、启动期探测（好/坏形状）、工具面计数 == 33** → **P3：客户端半边（loader 协议、cordis 插件形状、`apply` 注册到 `shell.overlay`、只点平台种子表）** → **P4：客户端引用的三条实时路由与服务端一字不差** → **P5：客户端导出的几何夹取与设置规整纯函数（三态夹取 + 越界回落）** → **P6：`pillAnchor`（胶囊四角定位）与 `withScheme`（地址补协议）真跑一遍，并断言新增设置键 `pillPos`/`autoClean` 的默认与越界回落** → **P7：客户端的写路由引用（logs + viewport）与服务端一字不差、`clampRect` 的面板间距（第三参）、新设置键（`viewport`/`pillX`/`pillY`/`panelGap`/`zBase`）与脏输入规整、胶囊自定偏移** → **P8：窗口外观纯函数（`appearanceStyle` 的 CSS 变量——外壳的 rim/alpha/blur/sat/glow/solid 与「内部分区也跟着透明」的 `--bsp-card`/`--bsp-surface`、自定义色时分隔线 `--bsp-divider`；`borderOf` 只放行预设色或 `#rrggbb`、注入串回落主题色、不透明度 20–100 与玻璃档位回落）** → **随包全局技能（第 6 段 8 项：空目录报缺失、`--install` 真落盘、台账、重复跑幂等、改过的文件不覆盖、`--force` 才覆盖、`--json` 可被脚本消费、配置项 `skillsDir`/`syncSkills` 在 schema 里）** → tarball 形状含两份 `SKILL.md` 与 `browser-runtime/scripts/` → `remove`，不碰默认 profile |
+| `scripts/verify-provider.mjs` | **125 通过 / 0 失败** | 33 个工具的行为与边界（含 `execute`/`a11y`/`scrape`/`form`/`screenshot`/`download`/`auth`）、会话隔离与复活、保存路径准入与默认保存目录（D1）、代理对截断、**P1：`maxTabs` 上限（拒绝后不留半开页）、无会话时释放连接（守护进程按 `idleMs` 回收 + 自愈）、配置默认值（`maxTabs` 5 / `idleMs` 300000 / 视口 1920×1080）** → **P7：窗口分辨率 `setViewport`（配置初值、新页面按配置打开、改尺寸后真页面重排、新会话沿用、越界夹取、非法值报 `BROWSER_VIEWPORT_INVALID`）** → **随包技能提供者（8 项：`list()` 两份候选、`source:'bundled'` + rank 600 + `provider` 名一致、`resourceBase` 目录真实存在、候选形状满足 dsh-skill 校验、`browser-runtime` 保持模型不自动调用、`get()` 返回已剥 frontmatter 的正文、读不到的技能不进候选、`Config` 默认 `registerSkills:true`/`syncSkills:false`）** |
+| `scripts/verify-bundle.mjs` | **70/70** | 在一次性隔离 `DSH_HOME` 里跑官方 `add` → `--dump-config` → 转出口形状比对 → **P2：宿主 peer 解析、启动期探测（好/坏形状）、工具面计数 == 33** → **P3：客户端半边（loader 协议、cordis 插件形状、`apply` 注册到 `shell.overlay`、只点平台种子表）** → **P4：客户端引用的三条实时路由与服务端一字不差** → **P5：客户端导出的几何夹取与设置规整纯函数（三态夹取 + 越界回落）** → **0.8.2/G：`clampRect` 第四参「顶部留白」（窗口不许压到宿主顶栏）、`topInsetFromBoxes`/`resolveTopInset` 的自动量（贴顶 + 够宽 + 高度合理里取最高）与 0–200 夹取、`ratioOf` 的画面比例回退、`fitPicture`/`topInset` 两项新默认、没记过位置时摆正中** → **P6：`pillAnchor`（胶囊四角定位）与 `withScheme`（地址补协议）真跑一遍，并断言新增设置键 `pillPos`/`autoClean` 的默认与越界回落** → **P7：客户端的写路由引用（logs + viewport）与服务端一字不差、`clampRect` 的面板间距（第三参）、新设置键（`viewport`/`pillX`/`pillY`/`panelGap`/`zBase`）与脏输入规整、胶囊自定偏移** → **P8：窗口外观纯函数（`appearanceStyle` 的 CSS 变量——外壳的 rim/alpha/blur/sat/glow/solid 与「内部分区也跟着透明」的 `--bsp-card`/`--bsp-surface`、自定义色时分隔线 `--bsp-divider`；`borderOf` 只放行预设色或 `#rrggbb`、注入串回落主题色、不透明度 20–100 与玻璃档位回落）** → **随包技能（第 6 段 11 项：空目录报缺失、`--install` 真落盘、台账、重复跑幂等、改过的文件不覆盖、`--force` 才覆盖、`--json` 可被脚本消费、插件源码里确实 `registerProvider` + `registerSkills`/`syncSkills` 两个默认值、落盘仍可选、`--uninstall` 保留改过的 1 个撤其余 6 个、撤净后连台账与空目录一起清掉）** → tarball 形状含两份 `SKILL.md`、`browser-runtime/scripts/` 与 `src/skill-provider.mjs` → `remove`，不碰默认 profile |
 | `scripts/verify-data.mjs` | **86 通过 / 0 失败** | **P3：`ops`/`console`/`network`/`har`/`cookies` 五个观测面 + 只读面板路由**——操作日志（含通用追踪覆盖 `snapshot`/`content`/`screenshot`/`listTabs`、失败记 `ok:false` 与原因）、控制台两类、网络两阶段、HAR 落盘与复制、cookie/localStorage 导出注入与权限、`panel.json` 的形状/行数/405/卸载、IO 失败不抛 → **P4：实时窗口四条路由与三道闸**（取帧 JPEG 与帧序号头、无新帧 204、打字/点击/goto 转发、未知动作 400、非本机 403、跨站 403、方法 405、DELETE 停流、无 provider 503、dispose 一起摘掉） → **P5：取帧参数透传与夹取（`x-frame-quality`/`x-frame-max`）、`live.json.options` 回读、`panel.json.service` 只读服务块**（版本/会话/上限/开关一致，且载荷不含本机绝对路径） → **P6：日志清理路由（`clear` 清三类、`trim` 留最近 N 条、未知类型 400、非 POST 405、跨站 403、非回环 403、dispose 摘掉）与「一个会话都没有」时地址栏跳转自动开会话并补 `https`、空网址 400、非跳转动作 409** → **P7：分辨率写路由**（`panel.json.service.viewport`、`POST /browser-service/viewport` 之后真页面视口变为新尺寸并回 `applied`、非法值 400、非 POST 405、跨站 403、非回环 403、无 provider 503、dispose 摘掉；另加「缺 `maxh` 时高度沿用当前值而不是塌到下限」这条画面糊的回归断言） |
 | `scripts/verify-matrix.mjs` | **4 个宿主版本 × 12 项** | 把同一个 tarball 装进不同版本的 DSH：`add` → `--dump-config` → 入口可加载 → `apply(桩 ctx)` 注册出 provider 且探测无 error → `--smoke` 用装进来的 bin 自启守护进程、真开页面读回正文 |
 
@@ -426,7 +470,7 @@ node scripts/verify-matrix.mjs --dsh <bin> --dsh <bin> --smoke   # 多版本 DSH
 dsh-browser-service/
 ├── package.json            # 单一交付物：dsh.bundle.patch / dsh.client / bin / files
 ├── bin/browsersvc.mjs      # 守护进程 CLI（start/stop/status/…/skills）
-├── src/                    # 守护进程内核：config / daemon / proxy / opslog / skills
+├── src/                    # 守护进程内核：config / daemon / proxy / opslog / skills / skill-provider
 ├── plugin/
 │   ├── cordis.patch.yml    # bundle patch：insert 接缝 + 33 工具 + provider，disable 两个内置
 │   ├── lib/                # 宿主半边：index（插件入口）/ provider / panel / liveview / compat / dom
@@ -488,7 +532,7 @@ npm publish --access public
 11. **截图/下载默认只能写进系统 Downloads 目录**（`XDG_DOWNLOAD_DIR` → 家目录下存在的 `Downloads`/`下载`/`下載` → `~/Downloads`，对齐内置 provider）。要写进工作区或别处，就在 profile patch 的 `browser-cdp` 行 `config` 里显式配 `downloadDir`（patch **整行替换** `config`，覆盖时该行其它键要重述）。
 12. **单个会话默认最多 5 个标签页**（配置 `maxTabs`，夹 `1..50`）。每个标签页是独立渲染进程，实测约 +93 MB；超限时 `browser_open {newTab:true}` 报 `BROWSER_TAB_LIMIT`，文案会列出当前标签，用 `browser_close_tab` 关掉不用的、或 `browser_reset_session` 清空本会话（P1）。
 13. **面板设置存在浏览器本地**（`localStorage`）：换机器/换浏览器要重新调；同一拍里连点两个设置按钮也不会互相覆盖（P8 改成传补丁 + 函数式更新）。
-14. **随包技能只覆盖「我们自己写过且之后没人动过」的文件**：你手工改过的同名技能会保留，插件的同步会跳过并记一行 warn（要覆盖用 `browsersvc skills --install --force`）。
+14. **随包技能在技能中心里显示成「系统内置」**：包内 `skills/` 由插件启动时注册的**技能提供者**提供（`source:'bundled'`、rank 600，与 `dsh-univer-office` 同形态），改技能正文不用重启。**同一层里 rank 小的先赢**，所以如果你之前用 `browsersvc skills --install` 落过盘（用户级 rank 400），那份会盖住内置的——跑一次 `browsersvc skills --uninstall` 再重启 DSH 就回到「系统内置」。落盘的同步只覆盖「我们自己写过且之后没人动过」的文件：你手工改过的同名技能会保留，同步会跳过并记一行 warn（要覆盖用 `browsersvc skills --install --force`）。
 
 ## FAQ
 
@@ -551,7 +595,7 @@ npm publish --access public
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | **M1** | 守护进程 + 回环代理 + 空闲回收 + 崩溃重启 + 35 项验收 | ✅ 完成 |
-| **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerBrowserProvider`），复用接缝包的 33 个 `browser_*` 工具 | ✅ 完成（116 项 + DSH 内端到端） |
+| **M2** | DSH provider 插件（`inject=['browser']` + `ctx.browser.registerBrowserProvider`），复用接缝包的 33 个 `browser_*` 工具 | ✅ 完成（125 项 + DSH 内端到端） |
 | **M6** | 代码审查 18 条缺陷修复（F1–F18） | ✅ 完成（v0.3.0 → v0.3.3） |
 | **M7** | 「一个包装完」：单一交付物，接缝与工具面由依赖 `dsh-builtin-browser` 转出 | ✅ 完成（v0.4.0） |
 | **P2** | DSH 版本适配：启动期能力探测 + 人话报错（`plugin/lib/compat.js`）、`schemastery` 改 peer、多版本实测矩阵 | ✅ 完成（v0.5.1） |
@@ -562,12 +606,15 @@ npm publish --access public
 | **P7** | 窗口分辨率与胶囊坐标可调、清理可见化、画面清晰度：设置里选浏览器窗口分辨率（真改视口、已开页面重排、新会话沿用、服务端夹取）、胶囊水平/垂直偏移 + 面板间距 + 层级基准（`z-index`）、清理/自动清理成功与失败都出提示（旧版宿主会被明确告知「重启 DSH 后生效」）；修掉「分辨率调大了画面还是糊」的真缺陷——缺 `maxh` 时高度上限被算成下限 240，现改为缺字段沿用当前值 + 最大边同时封顶宽高 + 默认画质 85 | ✅ 完成（v0.8.1） |
 | **P8** | 窗口外观可自定义 + 设置显式保存：设置页新增「窗口外观」（边框颜色＝跟随主题/无边框/六个预设色/取色器自定、背景不透明度 40–100%、玻璃效果＝关/毛玻璃/液态玻璃），窗口与胶囊共用同一份外观且**内部分区一起透明**（自定义色时分隔线用同色调 45%）；设置改成「改完先预览、点保存才落盘」，并有吸顶保存栏（未保存琥珀提示 + 入口/胶囊小圆点、保存成功绿字、写本地存储失败红字说明原因），另有「恢复默认」 | ✅ 完成（v0.8.1） |
 | **S1** | 随包全局技能：`skills/browser` + `skills/browser-runtime` 随包发布（共 7 个文件），`src/skills.mjs` 带归属台账同步（用户改过的文件不覆盖）+ `browsersvc skills [--install] [--force]` + 插件启动时自动同步（`skillsDir`/`syncSkills`） | ✅ 完成（v0.8.1） |
+| **S2** | 随包技能改成**内置技能提供者**（技能中心显示「系统内置」）：新增 `src/skill-provider.mjs`（`ctx.skills.registerProvider()`；候选带 `source:'bundled'` + rank 600、`resourceBase` 指向包内 `skills/<name>/`、正文现读现剥 frontmatter），`plugin/lib/index.js` 的 `apply()` **先注册提供者**（配置 `registerSkills` 默认开；宿主没有 `skills` 服务只记一行日志，绝不影响 provider），落盘改成可选（`syncSkills` 默认 **false**：落盘是用户级 rank 400，会盖住内置 600），`src/skills.mjs` 新增 `removeSkills()` 与 CLI `browsersvc skills --uninstall`（只删本包写过且没被改过的，撤净后连台账与空目录一起清） | ✅ 完成（v0.8.2） |
+| **G** | 窗口几何三项（只在客户端半边）：贴合画面比例（默认开，舞台按画面比例撑高、去黑边、贴合时手柄只调宽度）、顶部留白（默认自动，`clampRect` 第四参管住上边界与最大高度，可手填 0–200）、没记过位置时摆正中；并按真机复核补掉「贴合后首次打开偏上 ~98px」（先量真实高度再居中） | ✅ 完成（v0.8.2） |
 
 未来可能做：面向「任何插件」的通用 HTTP 面（`/fetch` `/screenshot` `/eval`，M4）；CDP-over-pipe 代理，让 univer 也复用守护进程（M5，进阶、未验证）。
 
 ## 更新记录
 
-- **[CHANGELOG.md](https://github.com/lyp88997/dsh-browser-service/blob/main/CHANGELOG.md)** —— v0.8.1 / v0.8.0 / v0.7.0 / 0.6.0 / 0.5.1 / 0.5.0 / 0.4.4 / 0.4.3 / 0.4.2 / 0.4.1 / 0.4.0 / 0.3.3 / 0.3.2 / 0.3.1 / 0.3.0，含每条真实缺陷（F1–F27、P1–P8、B1–B4、U1–U6、D1）的复现与修复。
+- **[CHANGELOG.md](https://github.com/lyp88997/dsh-browser-service/blob/main/CHANGELOG.md)** —— v0.8.2 / v0.8.1 / v0.8.0 / v0.7.0 / 0.6.0 / 0.5.1 / 0.5.0 / 0.4.4 / 0.4.3 / 0.4.2 / 0.4.1 / 0.4.0 / 0.3.3 / 0.3.2 / 0.3.1 / 0.3.0，含每条真实缺陷（F1–F27、P1–P8、B1–B4、U1–U6、D1）的复现与修复。
+- 摘要：`0.8.2` 调默认参数并按用户反馈修窗口几何 —— 默认参数改成取帧质量 70、打开面板不自动取帧、视口 1920×1080、背景不透明度 40% + 毛玻璃（宿主 `viewportWidth`/`viewportHeight` 同步 1920×1080；顺带修掉 `normalizeSettings` 里 `source.x !== false` 导致布尔默认值形同虚设的潜伏缺陷）＋ **G 窗口几何三项**（贴合画面比例＝按比例撑高去黑边、顶部留白＝窗口让开宿主顶栏且可手填、没记过位置时摆正中；并按真机复核修掉「贴合后首次打开偏上」）＋ **S2 随包技能改内置提供者**（技能中心显示「系统内置」，落盘改成可选，新增 `browsersvc skills --uninstall`）。验收 35/35、125 通过 0 失败、70/70、86 通过 0 失败。
 - 摘要：`0.8.1` 收口界面与外观并新增随包技能 —— P6 界面美化与体验修补（整套跟宿主设计令牌走、胶囊可换四角、菜单 SVG 图标与标签栏键盘导航、日志手动/自动清理、地址栏跳转无会话时自动开页且失败可见）＋ P7 窗口分辨率与胶囊坐标可调、清理可见化（分辨率真改浏览器视口、胶囊水平/垂直偏移 + 面板间距 + 层级基准、清理成败都有顶部提示、画面糊的根因已修）＋ P8 窗口外观可自定义与设置显式保存（边框颜色/背景不透明度/玻璃效果，窗口与胶囊共用且内部分区一起透明；改完先预览、点保存才落盘，成败都有提示，同一拍连点不互相覆盖）＋ **随包全局技能**（`browser`、`browser-runtime` 共 7 个文件，装完自动同步到 `$DSH_HOME/skills`，带归属台账：用户改过的文件不覆盖）。全部零新增工具（工具面仍是 33 个）。
 - `0.8.0` 窗口与入口重做（可拖动/可缩放的浮动窗口、双击标题栏最大化、左侧一竖排入口、设置区与只读服务信息、取帧画质与最大边随请求透传并在服务端夹取）；`0.7.0` 实时交互网页窗口（面板「网页」标签帧流 + 点击/滚动/打字/地址栏直接作用于真浏览器，只对本机回环开放，零新增工具）；`0.6.0` 可观测性与交互（`ops`/`console`/`network`/`har`/`cookies` 五个 CLI 观测面 + 只读网页面板，零新增工具）；`0.5.1` DSH 版本适配（启动期能力探测 + 人话报错、`schemastery` 改 peer、多版本实测矩阵）；`0.5.0` 资源收口（`maxTabs` 上限 + 无会话时释放连接，让守护进程能按 `idleMs` 回收）；`0.4.4` 修掉代理 keep-alive 免检（F27）；`0.4.3` 默认 `downloadDir` 对齐内置 provider（系统 Downloads，保存路径默认就有范围）；`0.4.2` 按热门插件共性重写 README（纯文档，代码同 0.4.1）；`0.4.1` 修正 npm 页面上的 README（代码同 0.4.0）；`0.4.0` 合并成单一交付物（一个包装完）；`0.3.0`–`0.3.3` 代码审查与按官方文档核对打包（26 条修复）。
 

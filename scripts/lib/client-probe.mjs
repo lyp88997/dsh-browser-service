@@ -106,6 +106,14 @@ if (spec) {
       const look = inner.normalizeSettings({ borderColor: 'javascript:alert(1)', cardAlpha: 0, glass: 123 });
       out.appearanceClamp = { borderColor: look.borderColor, cardAlpha: look.cardAlpha, glass: look.glass };
       out.appearanceCustom = inner.normalizeSettings({ borderColor: '#AABBCC' }).borderColor;
+      // 窗口几何两项新设置（v0.8.2）：顶部留白 / 贴合画面比例。
+      out.geoDefaults = { topInset: inner.normalizeSettings({}).topInset, fitPicture: inner.normalizeSettings({}).fitPicture };
+      out.geoClamp = {
+        topInset: inner.normalizeSettings({ topInset: 9999 }).topInset,
+        manual: inner.normalizeSettings({ topInset: 96 }).topInset,
+        auto: inner.normalizeSettings({ topInset: 'auto' }).topInset,
+        fitOff: inner.normalizeSettings({ fitPicture: false }).fitPicture,
+      };
     }
     if (typeof inner?.appearanceStyle === 'function') {
       out.appear = {
@@ -119,6 +127,36 @@ if (spec) {
         rb: inner.pillAnchor('rb'),
         custom: inner.pillAnchor('rt', 30, 60),
         bad: inner.pillAnchor('nope'),
+      };
+    }
+    if (typeof inner?.clampRect === 'function' && typeof inner?.resolveTopInset === 'function') {
+      // 顶部留白（v0.8.2）：贴顶 + 够宽 + 高度合理里取最高的；量不到按 48；手填夹到 0~200。
+      out.topInset = {
+        measured: inner.topInsetFromBoxes([
+          { top: 0, width: 800, height: 44, position: 'fixed' },
+          { top: 0, width: 700, height: 96, position: 'sticky' },
+          { top: 0, width: 200, height: 120, position: 'fixed' },
+          { top: 40, width: 800, height: 120, position: 'fixed' },
+          { top: 0, width: 800, height: 400, position: 'fixed' },
+        ], { w: 800, h: 600 }),
+        none: inner.topInsetFromBoxes([], { w: 800, h: 600 }),
+        auto: inner.resolveTopInset('auto', [], { w: 800, h: 600 }),
+        manual: inner.resolveTopInset(120, [], { w: 800, h: 600 }),
+        clamped: inner.resolveTopInset(9999, [], { w: 800, h: 600 }),
+        zero: inner.resolveTopInset(0, [], { w: 800, h: 600 }),
+      };
+      out.clampTop = {
+        auto: inner.clampRect({ x: null, y: null, w: 400, h: 300 }, { w: 800, h: 600 }, 10, 48),
+        none: inner.clampRect({ x: null, y: null, w: 400, h: 300 }, { w: 800, h: 600 }, 10, 0),
+        pinned: inner.clampRect({ x: 5, y: 5, w: 400, h: 300 }, { w: 800, h: 600 }, 10, 60),
+        capped: inner.clampRect({ x: 0, y: 0, w: 400, h: 9999 }, { w: 800, h: 600 }, 10, 60),
+      };
+    }
+    if (typeof inner?.ratioOf === 'function') {
+      out.ratio = {
+        frame: inner.ratioOf({ w: 1920, h: 1080 }, '1280x720'),
+        fallback: inner.ratioOf(null, '1920x1080'),
+        bad: inner.ratioOf(null, 'bogus'),
       };
     }
     if (typeof inner?.withScheme === 'function') {

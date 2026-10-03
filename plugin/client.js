@@ -155,6 +155,10 @@ window.__ModuleLoader__.load({
     const OFFSET_RANGE = [0, 400];
     const GAP_RANGE = [0, 64];
     const Z_RANGE = [1, 2000];
+    /** 顶部留白：窗口顶部要让开宿主顶栏的高度（'auto' = 自动量，或 0~200 手填）。 */
+    const TOP_RANGE = [0, 200];
+    const TOP_INSET_FALLBACK = 48;
+    const TOP_PRESETS = [['auto', '自动'], [0, '0'], [24, '24'], [48, '48'], [64, '64'], [96, '96']];
 
     // ---- 窗口外观（P8）：边框颜色 / 背景不透明度 / 玻璃效果 ----
 
@@ -191,24 +195,30 @@ window.__ModuleLoader__.load({
     const ALPHA_RANGE = [20, 100];
 
     const DEFAULT_SETTINGS = {
-      quality: 85,
+      // 0.8.2 起的新默认值（用户指定）：画质 70（省流量）、不自动取帧（打开面板不占 CPU/带宽）、
+      // 视口 1920×1080、外观 40% 不透明 + 毛玻璃。
+      quality: 70,
       maxWidth: 1280,
       pollMs: DEFAULT_POLL_MS,
       lines: DEFAULT_LINES,
       tab: 'live',
-      autoStream: true,
+      autoStream: false,
+      // 窗口贴合画面比例（0.8.2 起默认开）：高度跟着画面比例走，不留黑边。
+      fitPicture: true,
       remember: true,
       pillPos: 'lt',
       autoClean: 0,
       // P7（0.8.1 追加）：浏览器窗口分辨率 + 胶囊/面板的像素级位置。
-      viewport: '1440x900',
+      viewport: '1920x1080',
       pillX: 15,
       pillY: 48,
       panelGap: 10,
+      // 顶部留白：'auto' = 量宿主顶栏（量不到按 48），或手填 0~200。
+      topInset: 'auto',
       zBase: 40,
       // P8：窗口外观（边框颜色 / 背景不透明度 / 玻璃效果）。
       borderColor: BORDER_THEME,
-      cardAlpha: 95,
+      cardAlpha: 40,
       glass: 'frost',
     };
 
@@ -394,7 +404,7 @@ window.__ModuleLoader__.load({
 .bsp-stage{position:relative;flex:1;min-height:0;margin:8px;display:flex;align-items:center;
   justify-content:center;overflow:hidden;border-radius:9px;
   box-shadow:inset 0 0 0 1px ${tok.border2};
-  background:#0b0b0e;cursor:crosshair;outline:none;transition:box-shadow 120ms ease}
+  background:transparent;cursor:crosshair;outline:none;transition:box-shadow 120ms ease}
 .bsp-stage:focus-visible{box-shadow:inset 0 0 0 1px ${tok.accent},0 0 0 2px ${tok.accentBg}}
 .bsp-stage:fullscreen{margin:0;border-radius:0}
 .bsp-shot{display:block;width:100%;height:100%;object-fit:contain;user-select:none;-webkit-user-drag:none}
@@ -494,8 +504,9 @@ window.__ModuleLoader__.load({
         pollMs: clampInt(source.pollMs, POLL_RANGE[0], POLL_RANGE[1], DEFAULT_SETTINGS.pollMs),
         lines: clampInt(source.lines, LINES_RANGE[0], LINES_RANGE[1], DEFAULT_SETTINGS.lines),
         tab: TAB_IDS.includes(source.tab) ? source.tab : DEFAULT_SETTINGS.tab,
-        autoStream: source.autoStream !== false,
-        remember: source.remember !== false,
+        autoStream: source.autoStream === undefined ? DEFAULT_SETTINGS.autoStream : source.autoStream !== false,
+        fitPicture: source.fitPicture === undefined ? DEFAULT_SETTINGS.fitPicture : source.fitPicture !== false,
+        remember: source.remember === undefined ? DEFAULT_SETTINGS.remember : source.remember !== false,
         pillPos: PILL_IDS.includes(source.pillPos) ? source.pillPos : DEFAULT_SETTINGS.pillPos,
         autoClean: AUTO_CLEAN_IDS.includes(Number(source.autoClean))
           ? Number(source.autoClean)
@@ -504,6 +515,9 @@ window.__ModuleLoader__.load({
         pillX: clampInt(source.pillX, OFFSET_RANGE[0], OFFSET_RANGE[1], DEFAULT_SETTINGS.pillX),
         pillY: clampInt(source.pillY, OFFSET_RANGE[0], OFFSET_RANGE[1], DEFAULT_SETTINGS.pillY),
         panelGap: clampInt(source.panelGap, GAP_RANGE[0], GAP_RANGE[1], DEFAULT_SETTINGS.panelGap),
+        topInset: source.topInset === undefined || source.topInset === 'auto'
+          ? DEFAULT_SETTINGS.topInset
+          : clampInt(source.topInset, TOP_RANGE[0], TOP_RANGE[1], TOP_INSET_FALLBACK),
         zBase: clampInt(source.zBase, Z_RANGE[0], Z_RANGE[1], DEFAULT_SETTINGS.zBase),
         borderColor: borderOf(source.borderColor),
         cardAlpha: clampInt(source.cardAlpha, ALPHA_RANGE[0], ALPHA_RANGE[1], DEFAULT_SETTINGS.cardAlpha),
@@ -580,28 +594,35 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 窗口几何夹取（纯函数）：宽度/高度不小于最小值、不超过视口减去 margin，
-     * x/y 落在可用范围内；x/y 缺失（null）时贴右下角。
+     * 窗口几何夹取（纯函数）：宽度/高度不小于最小值、不超过视口减去 margin 与顶部留白，
+     * x/y 落在可用范围内；x/y 缺失（null）时**摆正中**。
      * margin 是「面板间距」（设置里可调，默认 0）——保证窗口不会紧贴屏幕边。
+     * insetTop 是「顶部留白」——宿主顶栏/标题栏盖住的高度，窗口不许压上去（0 = 不避让）。
      */
-    function clampRect(rect, bounds, margin = 0) {
+    function clampRect(rect, bounds, margin = 0, insetTop = 0) {
       const pad = clampInt(margin, GAP_RANGE[0], GAP_RANGE[1], 0);
+      const top = clampInt(insetTop, TOP_RANGE[0], TOP_RANGE[1], 0);
       const bw = Number(bounds?.w);
       const bh = Number(bounds?.h);
-      // 可用区域要扣掉两侧间距；视口太小时不强行扣（否则宽度会小于最小值）。
-      const availW = Number.isFinite(bw) && bw > 0 ? Math.max(MIN_W, bw - pad * 2) : DEFAULT_WINDOW.w;
-      const availH = Number.isFinite(bh) && bh > 0 ? Math.max(MIN_H, bh - pad * 2) : DEFAULT_WINDOW.h;
+      const knownW = Number.isFinite(bw) && bw > 0;
+      const knownH = Number.isFinite(bh) && bh > 0;
+      // 可用区域要扣掉两侧间距与顶部留白；视口太小时不强行扣（否则宽度会小于最小值）。
+      const availW = knownW ? Math.max(MIN_W, bw - pad * 2) : DEFAULT_WINDOW.w;
+      const availH = knownH ? Math.max(MIN_H, bh - top - pad * 2) : DEFAULT_WINDOW.h;
       const w = Math.min(availW, Math.max(MIN_W, Number(rect?.w) || DEFAULT_WINDOW.w));
       const h = Math.min(availH, Math.max(MIN_H, Number(rect?.h) || DEFAULT_WINDOW.h));
-      const maxX = Math.max(pad, (Number.isFinite(bw) && bw > 0 ? bw : w + pad * 2) - w - pad);
-      const maxY = Math.max(pad, (Number.isFinite(bh) && bh > 0 ? bh : h + pad * 2) - h - pad);
+      const maxX = Math.max(pad, (knownW ? bw : w + pad * 2) - w - pad);
+      const maxY = Math.max(top + pad, (knownH ? bh : h + top + pad * 2) - h - pad);
       // 注意：Number(null) === 0，所以「没记过位置」必须显式判 null/undefined，否则会跑到左上角。
       const rawX = Number(rect?.x);
       const rawY = Number(rect?.y);
       const hasX = rect?.x !== null && rect?.x !== undefined && Number.isFinite(rawX);
       const hasY = rect?.y !== null && rect?.y !== undefined && Number.isFinite(rawY);
-      const x = hasX ? Math.min(maxX, Math.max(pad, Math.floor(rawX))) : maxX;
-      const y = hasY ? Math.min(maxY, Math.max(pad, Math.floor(rawY))) : maxY;
+      // 默认摆正中：水平居中；垂直在「顶部留白之下 … 底部间距之上」居中。
+      const cx = Math.floor((knownW ? bw : w + pad * 2) / 2 - w / 2);
+      const cy = top + Math.floor(((knownH ? bh : h + top + pad * 2) - top) / 2 - h / 2);
+      const x = hasX ? Math.min(maxX, Math.max(pad, Math.floor(rawX))) : Math.min(maxX, Math.max(pad, cx));
+      const y = hasY ? Math.min(maxY, Math.max(top + pad, Math.floor(rawY))) : Math.min(maxY, Math.max(top + pad, cy));
       return { x, y, w, h };
     }
 
@@ -634,6 +655,75 @@ window.__ModuleLoader__.load({
         w: typeof window === 'undefined' ? 0 : window.innerWidth,
         h: typeof window === 'undefined' ? 0 : window.innerHeight,
       };
+    }
+
+    /**
+     * 从「贴顶条状元素」的实测值里挑顶部留白（纯函数）：只认贴顶（±2px）、够宽
+     * （≥ 视口 60%）、高度合理（24~200px，且不到视口 40%）里最高的那个；量不到回 0。
+     */
+    function topInsetFromBoxes(boxes, bounds) {
+      const bw = Math.max(1, Number(bounds?.w) || 0);
+      const bh = Number(bounds?.h) || 0;
+      let best = 0;
+      for (const box of boxes || []) {
+        const top = Number(box?.top);
+        const width = Number(box?.width);
+        const height = Number(box?.height);
+        if (!Number.isFinite(top) || top < -2 || top > 2) continue;
+        if (!Number.isFinite(width) || width < bw * 0.6) continue;
+        if (!Number.isFinite(height) || height < 24 || height > 200) continue;
+        if (bh > 0 && height > bh * 0.4) continue;
+        if (height > best) best = height;
+      }
+      return Math.round(best);
+    }
+
+    /** 顶部留白取值（纯函数）：'auto' = 实测（量不到按 48）；数字 = 手填并夹到 0~200。 */
+    function resolveTopInset(mode, boxes, bounds) {
+      if (mode !== 'auto' && mode !== null && mode !== undefined) {
+        return clampInt(mode, TOP_RANGE[0], TOP_RANGE[1], TOP_INSET_FALLBACK);
+      }
+      const measured = topInsetFromBoxes(boxes, bounds);
+      return measured > 0 ? Math.min(TOP_RANGE[1], measured) : TOP_INSET_FALLBACK;
+    }
+
+    /** 画面比例（纯函数）：优先用真实帧尺寸，没有帧就按设置里的分辨率；都给不出就不锁比例。 */
+    function ratioOf(meta, viewportId) {
+      const pair = (w, h) => (Number(w) > 0 && Number(h) > 0 ? `${Math.round(Number(w))} / ${Math.round(Number(h))}` : null);
+      if (meta && Number(meta.w) > 0 && Number(meta.h) > 0) return pair(meta.w, meta.h);
+      const matched = /^(\d+)x(\d+)$/.exec(String(viewportId ?? ''));
+      return matched ? pair(matched[1], matched[2]) : null;
+    }
+
+    /**
+     * 量宿主顶栏：贴顶的 fixed/sticky 元素（跳过我们自己的 .bsp-* 与面板节点），
+     * 只在面板打开或设置变化时跑一次，扫描上限 1500 个节点。
+     */
+    function collectTopBars(doc, bounds) {
+      const out = [];
+      const body = doc?.body;
+      if (!body?.querySelectorAll) return out;
+      const view = doc.defaultView ?? (typeof window === 'undefined' ? null : window);
+      const nodes = body.querySelectorAll('*');
+      const limit = Math.min(nodes.length, 1500);
+      for (let i = 0; i < limit; i += 1) {
+        const el = nodes[i];
+        const cls = typeof el.className === 'string' ? el.className : '';
+        if (cls.includes('bsp-') || el.id === 'dsh-browser-service-panel') continue;
+        let style = null;
+        try {
+          style = view?.getComputedStyle ? view.getComputedStyle(el) : null;
+        } catch {
+          continue;
+        }
+        if (!style) continue;
+        if (style.position !== 'fixed' && style.position !== 'sticky') continue;
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        const rect = el.getBoundingClientRect?.();
+        if (!rect || !rect.width || !rect.height) continue;
+        out.push({ top: rect.top, width: rect.width, height: rect.height, position: style.position });
+      }
+      return out;
     }
 
     /** 用户要求减少动效时不放动画（拖尾、脉冲、骨架闪烁都跳过）。 */
@@ -1149,6 +1239,13 @@ window.__ModuleLoader__.load({
           })),
           h('div', { className: `bsp-note${vpNote?.tone ? ` ${vpNote.tone}` : ''}` },
             vpNote?.text ?? '改分辨率立刻生效：已打开的页面会按新尺寸重排，之后新建的会话也用它（服务端夹取 640×360 ~ 3840×2160）。'),
+          h(Field, { label: '贴合画面比例' }, h(Toggle, {
+            label: '窗口贴合画面比例（不留黑边）',
+            value: settings.fitPicture,
+            onChange: (fitPicture) => set({ fitPicture }),
+          })),
+          h('div', { className: 'bsp-note' },
+            '开着时窗口高度跟着画面比例走 ⇒ 上下不留黑边，右下角手柄只调宽度（高度自己算）。关掉就回到「宽高随意拖」。'),
           h(Field, { label: '打开即取帧' }, h(Toggle, {
             label: '打开即取帧',
             value: settings.autoStream,
@@ -1201,6 +1298,19 @@ window.__ModuleLoader__.load({
             max: GAP_RANGE[1],
             onChange: (panelGap) => set({ panelGap }),
           })),
+          h(Field, { label: '顶部留白' }, h(Segmented, {
+            label: '顶部留白',
+            value: settings.topInset,
+            options: TOP_PRESETS,
+            onChange: (topInset) => set({ topInset }),
+          })),
+          h(Field, { label: '留白手填' }, h(NumberField, {
+            label: '顶部留白手填',
+            value: settings.topInset === 'auto' ? TOP_INSET_FALLBACK : settings.topInset,
+            min: TOP_RANGE[0],
+            max: TOP_RANGE[1],
+            onChange: (topInset) => set({ topInset }),
+          })),
           h(Field, { label: '层级基准' }, h(NumberField, {
             label: '层级基准',
             value: settings.zBase,
@@ -1223,7 +1333,7 @@ window.__ModuleLoader__.load({
           h(Field, { label: '窗口' },
             h('button', { type: 'button', className: 'bsp-btn', onClick: onReset }, '恢复默认大小')),
           h('div', { className: 'bsp-note' },
-            '胶囊位置 + 水平/垂直偏移决定收起后小圆点贴在哪；面板间距是窗口/最大化时留出的边距；层级基准＝和宿主页面的叠压顺序（越大越靠前）。自动清理＝某类日志超过上限时保留最近一半，在面板打开着的时候检查（列表右上角的「清理」随时可手动清空）。')),
+            '胶囊位置 + 水平/垂直偏移决定收起后小圆点贴在哪；面板间距是窗口/最大化/居中时留出的边距；顶部留白＝窗口顶部让开宿主顶栏的高度（「自动」＝实测宿主顶栏，量不到按 48，也可手填 0~200）；层级基准＝和宿主页面的叠压顺序（越大越靠前）。自动清理＝某类日志超过上限时保留最近一半，在面板打开着的时候检查（列表右上角的「清理」随时可手动清空）。')),
         h('div', { className: 'bsp-section' },
           h('div', { className: 'bsp-secTitle' }, '服务信息（只读）'),
           h(Field, { label: '版本' }, service?.version || '—'),
@@ -1483,6 +1593,9 @@ window.__ModuleLoader__.load({
                 : '连接中…等待第一帧')
         : paused ? '已暂停' : started ? null : '已停帧';
       const quiet = noSession ? '输入网址后点「跳转」，会自动打开页面' : '画面来自真实浏览器，可直接点击/滚动/打字';
+      // 贴合画面比例（默认开）：舞台自带比例 ⇒ 舞台内不留黑边，窗口高度也跟着它走。
+      const ratio = ratioOf(meta, settings.viewport);
+      const fit = settings.fitPicture !== false && Boolean(ratio);
 
       return h('div', { className: 'bsp-live' },
         h('form', { className: 'bsp-addrRow', onSubmit: submit },
@@ -1523,7 +1636,8 @@ window.__ModuleLoader__.load({
         h('div', {
           ref: stage,
           tabIndex: 0,
-          className: 'bsp-stage',
+          className: fit ? 'bsp-stage bsp-stageFit' : 'bsp-stage',
+          style: fit ? { aspectRatio: ratio, flex: '0 1 auto' } : null,
           'aria-label': '浏览器实时画面（可直接点击、滚动、打字）',
           onMouseDown: onDown,
           onMouseUp: onUp,
@@ -1556,7 +1670,7 @@ window.__ModuleLoader__.load({
       const saved = React.useRef(normalizeSettings(stored.current.settings));
       const [saveNote, setSaveNote] = React.useState(null);
       const [geometry, setGeometry] = React.useState(() =>
-        clampRect(stored.current.window, viewport(), normalizeSettings(stored.current.settings).panelGap));
+        clampRect(stored.current.window, viewport(), normalizeSettings(stored.current.settings).panelGap, 0));
       const [tab, setTab] = React.useState(settings.tab);
       const [paused, setPaused] = React.useState(false);
       const [streaming, setStreaming] = React.useState(false);
@@ -1569,6 +1683,11 @@ window.__ModuleLoader__.load({
       // 夹取要用当前「面板间距」，但不该让 resize/拖拽的 effect 每次改设置都重建 ⇒ 用 ref 跟。
       const settingsRef = React.useRef(settings);
       settingsRef.current = settings;
+      // 顶部留白同理：拖拽/缩放/最大化都要用同一个值（'auto' 量出来的结果）。
+      const insetRef = React.useRef(TOP_INSET_FALLBACK);
+      const [topInset, setTopInset] = React.useState(TOP_INSET_FALLBACK);
+      /** 贴合画面比例（默认开）：开着时高度由内容决定，右下角手柄只调宽度。 */
+      const fitPicture = settings.fitPicture !== false;
 
       /** 有未保存的改动？（草稿 vs 上次保存的那份） */
       const dirty = safeJson(settings) !== safeJson(saved.current);
@@ -1600,10 +1719,36 @@ window.__ModuleLoader__.load({
 
       // 视口变了（浏览器窗口缩放）就把窗口拉回可见范围。
       React.useEffect(() => {
-        const onResize = () => setGeometry((prev) => clampRect(prev, viewport(), settingsRef.current.panelGap));
+        const onResize = () => setGeometry((prev) => clampRect(prev, viewport(), settingsRef.current.panelGap, insetRef.current));
         window.addEventListener('resize', onResize);
         return () => window.removeEventListener('resize', onResize);
       }, []);
+
+      // 顶部留白：打开面板（或改了这项设置）时量一次宿主顶栏，把窗口拉回它下面。
+      React.useEffect(() => {
+        if (!open) return undefined;
+        const bounds = viewport();
+        const boxes = settings.topInset === 'auto' ? collectTopBars(document, bounds) : [];
+        const inset = resolveTopInset(settings.topInset, boxes, bounds);
+        insetRef.current = inset;
+        setTopInset(inset);
+        setGeometry((prev) => clampRect(prev, bounds, settingsRef.current.panelGap, inset));
+        return undefined;
+      }, [open, settings.topInset]);
+
+      // 贴合画面比例时卡片高度由内容决定，而夹取用的是记下来的高度（默认 580）——
+      // 首次打开（没记过位置）时先量一次真实高度再摆正中，否则窗口看着偏上。
+      React.useEffect(() => {
+        if (!open || !fitPicture) return undefined;
+        const record = stored.current.window;
+        if (record && Number.isFinite(record.x) && Number.isFinite(record.y)) return undefined;
+        const node = card.current;
+        if (!node) return undefined;
+        const h = Math.round(node.getBoundingClientRect().height);
+        if (!(h > 0)) return undefined;
+        setGeometry((prev) => clampRect({ x: null, y: null, w: prev.w, h }, viewport(), settingsRef.current.panelGap, insetRef.current));
+        return undefined;
+      }, [open, fitPicture, settings.viewport]);
 
       // 记住窗口位置与大小（设置里可关）：入场先读，改了就写。
       // 写的是「已保存的设置 + 当前几何」——没点保存的草稿不该被顺手写进存储。
@@ -1740,7 +1885,7 @@ window.__ModuleLoader__.load({
         const flush = () => {
           frameId = 0;
           if (!next) return;
-          next = clampRect({ x: next.x, y: next.y, w: box.width, h: box.height }, viewport(), settingsRef.current.panelGap);
+          next = clampRect({ x: next.x, y: next.y, w: box.width, h: box.height }, viewport(), settingsRef.current.panelGap, insetRef.current);
           if (card.current) {
             card.current.style.left = `${next.x}px`;
             card.current.style.top = `${next.y}px`;
@@ -1770,13 +1915,14 @@ window.__ModuleLoader__.load({
         event.stopPropagation();
         const box = card.current?.getBoundingClientRect?.();
         if (!box) return;
+        const fitting = settingsRef.current.fitPicture !== false;
         const start = { x: event.clientX, y: event.clientY, w: box.width, h: box.height };
         let frameId = 0;
         let next = null;
         const flush = () => {
           frameId = 0;
           if (!next) return;
-          const rect = clampRect({ x: box.left, y: box.top, w: next.w, h: next.h }, viewport(), settingsRef.current.panelGap);
+          const rect = clampRect({ x: box.left, y: box.top, w: next.w, h: next.h }, viewport(), settingsRef.current.panelGap, insetRef.current);
           next = { w: rect.w, h: rect.h };
           if (card.current) {
             card.current.style.width = `${rect.w}px`;
@@ -1784,7 +1930,10 @@ window.__ModuleLoader__.load({
           }
         };
         const onMove = (moveEvent) => {
-          next = { w: start.w + (moveEvent.clientX - start.x), h: start.h + (moveEvent.clientY - start.y) };
+          // 贴合画面比例时只认横向拖动：高度由画面比例决定。
+          next = fitting
+            ? { w: start.w + (moveEvent.clientX - start.x), h: box.height }
+            : { w: start.w + (moveEvent.clientX - start.x), h: start.h + (moveEvent.clientY - start.y) };
           if (!frameId) frameId = requestAnimationFrame(flush);
         };
         const onUp = () => {
@@ -1793,7 +1942,7 @@ window.__ModuleLoader__.load({
           document.removeEventListener('mousemove', onMove);
           document.removeEventListener('mouseup', onUp);
           document.body.style.userSelect = '';
-          if (next) setGeometry((prev) => clampRect({ x: prev.x, y: prev.y, w: next.w, h: next.h }, viewport(), settingsRef.current.panelGap));
+          if (next) setGeometry((prev) => clampRect({ x: prev.x, y: prev.y, w: next.w, h: next.h }, viewport(), settingsRef.current.panelGap, insetRef.current));
         };
         document.body.style.userSelect = 'none';
         document.addEventListener('mousemove', onMove);
@@ -1815,17 +1964,18 @@ window.__ModuleLoader__.load({
         setGeometry((prev) => {
           const bounds = viewport();
           const pad = settingsRef.current.panelGap;
-          const full = { w: Number(bounds.w) - pad * 2, h: Number(bounds.h) - pad * 2 };
+          const inset = insetRef.current;
+          const full = { w: Number(bounds.w) - pad * 2, h: Number(bounds.h) - inset - pad * 2 };
           const isFull = Math.abs(prev.w - full.w) < 40 && Math.abs(prev.h - full.h) < 40;
           return isFull
-            ? clampRect({ x: null, y: null, w: DEFAULT_WINDOW.w, h: DEFAULT_WINDOW.h }, bounds, pad)
-            : clampRect({ x: pad, y: pad, ...full }, bounds, pad);
+            ? clampRect({ x: null, y: null, w: DEFAULT_WINDOW.w, h: DEFAULT_WINDOW.h }, bounds, pad, inset)
+            : clampRect({ x: pad, y: inset + pad, ...full }, bounds, pad, inset);
         });
         pulse();
       };
 
       const resetGeometry = () => {
-        setGeometry(clampRect({ x: null, y: null, w: DEFAULT_WINDOW.w, h: DEFAULT_WINDOW.h }, viewport(), settingsRef.current.panelGap));
+        setGeometry(clampRect({ x: null, y: null, w: DEFAULT_WINDOW.w, h: DEFAULT_WINDOW.h }, viewport(), settingsRef.current.panelGap, insetRef.current));
         pulse();
       };
 
@@ -1874,7 +2024,9 @@ window.__ModuleLoader__.load({
           left: `${geometry.x}px`,
           top: `${geometry.y}px`,
           width: `${geometry.w}px`,
-          height: `${geometry.h}px`,
+          // 贴合画面比例（默认开）：高度交给内容（舞台自带比例），只留一个「不超出视口」的上限。
+          height: fitPicture ? 'auto' : `${geometry.h}px`,
+          maxHeight: `calc(100vh - ${geometry.y + settings.panelGap}px)`,
           // 层级基准（设置里可调）：胶囊 zBase、卡片 zBase+1，保证卡片永远压在胶囊上面。
           zIndex: Number(settings.zBase) + 1,
           // 窗口外观（边框颜色 / 背景不透明度 / 玻璃效果）——纯 CSS 变量，改设置立刻见。
@@ -1971,7 +2123,11 @@ window.__ModuleLoader__.load({
                 `更新于 ${data ? relTime(data.generatedAt, now) : '—'}`),
               h('span', { className: 'bsp-spacer' }),
               h('span', null, `取帧 质量 ${settings.quality} · 最大边 ${settings.maxWidth}`)))),
-        h('div', { style: toneResize, onMouseDown: startResize, title: '拖动调整大小' }));
+        h('div', {
+          style: fitPicture ? { ...toneResize, cursor: 'ew-resize' } : toneResize,
+          onMouseDown: startResize,
+          title: fitPicture ? '拖动调整宽度（高度按画面比例）' : '拖动调整大小',
+        }));
     }
 
     /** 右下角缩放手柄（内联，因为它纯粹是这块小三角的几何）。 */
@@ -1994,7 +2150,7 @@ window.__ModuleLoader__.load({
     exports.inject = ['slots'];
     exports.apply = apply;
     // 纯函数导出：给隔离验收脚本断言几何夹取、设置规整与坐标映射（浏览器侧不会用到）。
-    exports.internals = { clampInt, clampRect, normalizeSettings, mapPoint, relTime, isAlarm, pillAnchor, withScheme, appearanceStyle, borderOf, DEFAULT_WINDOW, STORAGE_KEY, DEFAULT_SETTINGS };
+    exports.internals = { clampInt, clampRect, topInsetFromBoxes, resolveTopInset, ratioOf, collectTopBars, normalizeSettings, mapPoint, relTime, isAlarm, pillAnchor, withScheme, appearanceStyle, borderOf, DEFAULT_WINDOW, STORAGE_KEY, DEFAULT_SETTINGS };
     return exports;
   },
 });

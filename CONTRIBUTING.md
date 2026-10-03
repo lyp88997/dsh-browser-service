@@ -10,7 +10,7 @@ node scripts/verify-daemon.mjs && node scripts/verify-provider.mjs && node scrip
 # node scripts/verify-matrix.mjs --dsh dsh --smoke
 ```
 
-并在 PR 描述里贴上计数（当前基线：35/35、116 通过 0 失败、61/61、86 通过 0 失败；矩阵 4 个宿主版本 × 12 项）。
+并在 PR 描述里贴上计数（当前基线：35/35、125 通过 0 失败、70/70、86 通过 0 失败；矩阵 4 个宿主版本 × 12 项）。
 
 四条硬约束：
 

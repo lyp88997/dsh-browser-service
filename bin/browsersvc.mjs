@@ -4,7 +4,8 @@
  *
  *   browsersvc start|stop|status|restart|run|logs|ops|console|network|har|cookies|detect|skills [--port=9333] [--idle-ms=900000]
  *              [--kernel=/path/to/chrome] [--wrapper=/path/to/wrapper.sh] [--root=/path/to/state]
- *              [--install] [--force] [--dir=$DSH_HOME/skills]   # skills：查看/安装随包全局技能
+ *              [--install] [--uninstall] [--force] [--dir=$DSH_HOME/skills]   # skills：查看/落盘/撤销随包技能
+ *                                                                             #（插件默认把它们注册成「系统内置」技能，落盘是可选项）
  *
  * 约定：CDP 只监听 127.0.0.1；对外端口由本地代理暴露，代理同时负责空闲回收。
  */
@@ -15,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { detectKernels, ensureRoot, logFile, readConfigFile, resolveConfig, stateFile } from '../src/config.mjs';
 import { isAlive, probeVersion, readState, runSupervisor } from '../src/daemon.mjs';
 import { readConsole, readNetwork, readOps } from '../src/opslog.mjs';
-import { defaultSkillsRoot, inspectSkills, syncSkills } from '../src/skills.mjs';
+import { defaultSkillsRoot, inspectSkills, removeSkills, syncSkills } from '../src/skills.mjs';
 
 const BIN = fileURLToPath(new URL('./browsersvc.mjs', import.meta.url));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -424,17 +425,40 @@ const SKILL_STATE = {
   'unreadable-source': '源读不到',
 };
 
-/** 随包全局技能：不带 --install 只报状态；带 --install 落盘（默认目标 `$DSH_HOME/skills`）。 */
+/**
+ * 随包技能：不带 --install/--uninstall 只报状态；--install 落盘（可选，默认目标是 `$DSH_HOME/skills`）；
+ * --uninstall 撤掉落盘那份。插件默认走 `ctx.skills.registerProvider()` 注册成**内置**技能
+ * （source=bundled，技能中心显示「系统内置」）；落盘那份是**用户级**（rank 400），会盖住内置那份。
+ */
 function skills(flags) {
   const root = typeof flags.dir === 'string' && flags.dir ? resolve(flags.dir) : defaultSkillsRoot();
+  if (flags.uninstall === true) {
+    const res = removeSkills({ root });
+    if (flags.json === true) print(res, res.errors.length > 0 ? 1 : 0);
+    process.stdout.write(`删 ${res.removed.length} · 保留 ${res.kept.length}\n技能目录：${root}\n`);
+    for (const item of res.kept) process.stdout.write(`  保留 ${item.path} —— ${item.reason}\n`);
+    for (const item of res.errors) process.stdout.write(`  失败 ${item}\n`);
+    if (res.errors.length > 0) process.exit(1);
+    process.stdout.write(
+      res.markerRemoved
+        ? '落盘的技能与台账都已撤掉；这两份技能现在只由插件的「内置」提供者提供（重启 DSH 后技能中心显示「系统内置」）\n'
+        : '台账里还有属于本包的文件（上面「保留」那些不动它）；其余已撤掉\n',
+    );
+    process.exit(0);
+  }
   if (flags.install !== true) {
     const st = inspectSkills({ root });
     if (flags.json === true) print({ skillsDir: root, source: st.source, version: st.version, marker: st.marker, files: st.files });
     const lines = st.files.map((f) => `${SKILL_STATE[f.state].padEnd(6)} ${f.path}`);
     const pending = st.files.filter((f) => f.state === 'missing' || f.state === 'update').length;
+    const conflicts = st.files.filter((f) => f.state === 'modified' || f.state === 'foreign').length;
+    const onDisk = st.files.filter((f) => f.state !== 'missing' && f.state !== 'unreadable-source').length;
     process.stdout.write(
       `${lines.join('\n')}\n\n技能目录：${root}\n随包来源：${st.source}\n本包版本：${st.version}；台账：${st.marker.version ?? '无'}\n`
-      + `待处理 ${pending} 个（${pending > 0 ? 'browsersvc skills --install 装上' : '不用动'}）；槽位冲突 ${st.files.filter((f) => f.state === 'modified' || f.state === 'foreign').length} 个（要覆盖加 --force）\n`,
+      + `待处理 ${pending} 个（${pending > 0 ? 'browsersvc skills --install 装上' : '不用动'}）；槽位冲突 ${conflicts} 个（要覆盖加 --force）\n`
+      + (onDisk > 0
+        ? `注意：磁盘上这 ${onDisk} 个文件是**用户级**技能（rank 400），会在技能中心盖住插件注册的内置那份（rank 600）——想让技能中心显示「系统内置」，跑一次 browsersvc skills --uninstall\n`
+        : '磁盘上没有落盘副本：技能由插件的内置提供者提供（技能中心显示「系统内置」）\n'),
     );
     process.exit(0);
   }
@@ -455,7 +479,7 @@ function skills(flags) {
 }
 
 const { cmd, flags } = parse(process.argv.slice(2));
-const USAGE = 'browsersvc start|stop|status|restart|run|logs|ops|console|network|har|cookies|detect|skills [--port=9333] [--idle-ms=900000] [--kernel=...] [--wrapper=...] [--root=...] [--start-timeout=30000] [--internal-port-base=9300] [--lines=20] [--out=file] [--session=s1] [--url=https://a.com] [--export=file] [--import=file] [--install] [--force] [--dir=/path/to/skills] [--json]';
+const USAGE = 'browsersvc start|stop|status|restart|run|logs|ops|console|network|har|cookies|detect|skills [--port=9333] [--idle-ms=900000] [--kernel=...] [--wrapper=...] [--root=...] [--start-timeout=30000] [--internal-port-base=9300] [--lines=20] [--out=file] [--session=s1] [--url=https://a.com] [--export=file] [--import=file] [--install] [--uninstall] [--force] [--dir=/path/to/skills] [--json]';
 
 try {
   const cfg = toCfg(flags);

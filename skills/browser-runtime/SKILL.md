@@ -1,94 +1,120 @@
 ---
 name: browser-runtime
-description: 当浏览器工具报错（no usable browser provider / 无法连接 CDP 端点 / 401 / 会话内没有可用标签页）、截图纯白、中文变方块、dsh 重启后浏览器失效，或需要起停/诊断 browsersvc 守护进程、重建/迁移用户态 Chromium 运行时、修改 browser provider 配置或回滚时使用 —— 含 browsersvc CLI 速查、安装/升级（一条命令）、状态文件与凭据门、非 root 重建脚本、排障表与两条必知机制（bundles 与 patch 双注册）
-whenToUse: 浏览器不可用 / 渲染异常 / dsh 重启后失效 / 需起停或诊断 browsersvc / 需重建运行时或改 provider 配置时
+description: 浏览器工具报错（no usable browser provider / 无法连接 CDP 端点 / 401 / BROWSER_TAB_LIMIT / 会话内没有可用标签页）、截图纯白、中文变方块、重启 dsh 后浏览器失效、面板报 403/404/405 时用；也用于起停与诊断 browsersvc 守护进程、安装/升级到活 profile、重建非 root 用户态 Chromium、改 browser provider 配置、看观测日志与回滚 —— 含 browsersvc CLI 速查、技能 --install/--uninstall、状态文件与凭据门、面板六条路由与状态码、排障表与两条必知机制（bundles 与 patch 双注册）
+whenToUse: 浏览器不可用 / 渲染异常 / 面板或路由报错 / dsh 重启后失效 / 需起停或诊断 browsersvc / 需重建运行时、改 provider 配置或回滚时
 disable-model-invocation: true
 ---
 
 # browser-runtime — 浏览器服务、用户态 Chromium 与 dsh 配置运维
 
-> 姊妹技能 `browser` 讲**怎么用**；本技能讲**怎么修、怎么起停、怎么重建、怎么改配置、怎么回滚**。
-> 2026-09-30 实测校正：DSH 0.1.5-rc.3 + `dsh-browser-service` **v0.8.1**（仓库 `lyp88997/dsh-browser-service`，public，本地 `/home/node/DSH/dsh-browser-service`）。本技能的**文件本体随包发布**（`skills/browser-runtime/`），装包时由插件自动同步到 `$DSH_HOME/skills/`（带归属台账，你自己改过的那份不会被覆盖，见文末「随包技能」）。
-> 同日重启 DSH 后做了**活实例复核**（四条全过）：① 首次用浏览器时自启的守护进程 cmdline 为 `…/profiles/web/node_modules/dsh-browser-service/bin/browsersvc.mjs run --idle-ms=300000`（走 profile 里装的那份 + 插件默认带 idleMs）；② `maxTabs` 默认 5 真的拦：第 6 个 `browser_open {newTab:true}` 报 `BROWSER_TAB_LIMIT`；③ 关闭会话后 CDP 连接立刻断；④ 守护进程在启动后约 298 秒按 `idle-ms=300000` 退出、内核 11 个进程一起回收、cgroup 内存 1814MB → 1181MB。
+> 姊妹技能 `browser` 讲**怎么用**；本技能讲**怎么修、怎么起停、怎么重建、怎么改配置、怎么看观测、怎么回滚**。
+> 2026-09-30 实测校正（DSH 0.2.0-rc.2 + `dsh-browser-service` v0.8.2）。本技能与正文随包发布（`skills/browser-runtime/`），装包时由插件的**内置技能提供者**提供（`source:'bundled'` + rank 600，技能中心显示「系统内置」），不是落盘的用户级技能——详见 §5。
+> 同日重启后做的活实例复核（四条全过）：① 自启 cmdline 是 `…/profiles/web/node_modules/dsh-browser-service/bin/browsersvc.mjs run --idle-ms=300000`；② `maxTabs` 默认 5 真的拦第 6 个 `browser_open{newTab:true}`（报 `BROWSER_TAB_LIMIT`）；③ 关闭会话后 CDP 连接立刻断；④ 守护进程在启动后约 298 秒按 `idle-ms=300000` 退出，11 个内核进程一起回收，cgroup 内存 1814MB → 1181MB。
 
-## 安装 / 升级（v0.4.0 起：一个包装完）
-
-```bash
-# 装 / 升级：两种等价来源择一（provider + 33 个工具面 + 守护进程 CLI 全在这一个包里）
-dsh plugin --profile web add dsh-browser-service@latest                        # A) npm（0.4.3 起有代码变更、0.4.4 修 F27、0.5.0 收口资源（`maxTabs` 上限 + 无会话时释放连接）、0.5.1 做 DSH 版本适配（启动期能力探测 + 多版本实测矩阵）、0.6.0 加可观测性与网页面板（`ops`/`console`/`network`/`har`/`cookies` 五个 CLI + 右下角浮动看板，**零新增工具**）、0.7.0 加实时交互网页窗口（面板「网页」标签＝实时画面，可点/滚/打字/地址栏跳转，只对本机回环开放，**零新增工具**）、0.8.0 重做窗口与入口（可拖动/可缩放的浮动窗口 + 左侧一竖排入口 + 设置区与只读服务信息 + 取帧画质/最大边随请求透传并被服务端夹取，**零新增工具**）且同版追加一轮界面美化与体验修补（P6：设计令牌跟随主题、胶囊默认左上且可换四角、日志手动/自动清理、地址栏跳转自动开会话并把失败原因显示出来、入口换 SVG 图标 + 键盘导航）；**0.8.1 收口界面与外观**（P6 界面美化与体验修补、P7 分辨率/胶囊坐标可调 + 清理可见化、P8 窗口外观可定制（边框色/不透明度/玻璃效果）+ 设置改成「草稿 + 显式保存」，并把两份全局技能随包发布：`skills/` + `browsersvc skills --install` + 插件启动自动同步）；latest = 0.8.1）
-dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/latest/download/dsh-browser-service.tgz   # B) Release 资产（永不过期地址）
-# 之后必须重启 DSH（插件模块在 boot 时 import）；再校验组合：
-dsh --profile web --dump-config | grep -E 'browserProvider|patched by|not found'
-```
-
-- 期望：`browserProvider: cdp-daemon`、`patched by dsh-browser-service`；`browser-electron` / `playwright-browser` 两条守卫行会打印 `not found`（只装本包时这两个 id 不存在，无害）。
-- 接缝依赖 `dsh-builtin-browser` 已写进本包 `dependencies`（33 个 `browser_*` 工具经 `./browser`、`./tool-browser` 转出）⇒ **别再单独 `add dsh-builtin-browser`**（会出现两条 `tool-browser` 行、工具重名）。
-- **别用旧名 `dsh-browser-cdp`**：npm 上同名包是别人的（drscrewdriver 0.17.4），写了会装到别人家；本包 npm 名就是 `dsh-browser-service`，0.4.0 起已发布，所以能写 `dsh-browser-service@latest`。
-- 从源码装：`dsh plugin --profile web add github:lyp88997/dsh-browser-service`（pnpm 现场构建，需 profile 允许构建）。
-- 手写 patch 与 bundle 路线**二选一**（见下面「两条必知机制」）。
-
-## 现在是什么结构
+## 1. 现在的结构
 
 ```
 33 个 browser_* 工具（内置 dsh-builtin-browser/tool-browser）
   └─ ctx.browser seam（browserProvider = cdp-daemon）
-      └─ 插件 dsh-browser-service（providerId=cdp-daemon，v0.8.1；一个包＝provider + 守护进程 CLI + 网页面板（含实时窗口）+ 两份随包全局技能）
+      └─ 插件 dsh-browser-service（一个包 = provider + 守护进程 CLI + 网页面板 + 两份随包技能）
           └─ playwright-core connectOverCDP → 127.0.0.1:9333（Bearer token）
-              └─ browsersvc supervisor（代理 + 门禁 + 内核生命周期）
+              └─ browsersvc supervisor（回环代理 + 门禁 + 内核生命周期）
                   └─ chrome-headless-shell 154.0.8037.57（经 chromium-wrapper.sh）
 ```
 
-- **为什么不用内置 Electron provider**：`dsh-builtin-browser` 的 Electron 探测路径 `profiles/web/node_modules/electron/dist/electron` 从未下载（目录里只有 cli.js/install.js），报 `no usable browser provider is registered`；本机无 root、无 GUI 库、seccomp 下 Chromium 沙箱也起不来。
-- **为什么不用 `dsh-playwright-browser`**：它自带 10 个与内置**同名**的 `browser_*` 工具（工具名冲突），必须停用；停用后内置 33 个工具全回来（含 execute/a11y/scrape/download）。
+- **为什么不用内置 Electron provider**：`dsh-builtin-browser` 的 Electron 探测路径 `profiles/web/node_modules/electron/dist/electron` 从未下载（目录里只有 cli.js / install.js），报 `no usable browser provider is registered`；本机无 root、无 GUI 库，seccomp 下 Chromium 沙箱也起不来。
+- **为什么不用 `dsh-playwright-browser`**：它自带 10 个与内置**同名**的 `browser_*` 工具（工具名冲突），必须停用；停用后内置 33 个工具全回来。
 
-## browsersvc CLI 速查
+## 2. 安装 / 升级到活 profile
 
-`node /home/node/DSH/dsh-browser-service/bin/browsersvc.mjs <cmd>`
+```bash
+# 三种来源择一（provider + 33 个工具面 + 守护进程 CLI + 面板 + 技能都在这一个包里）
+dsh plugin --profile web add dsh-browser-service@latest     # A) npm
+dsh plugin --profile web add https://github.com/lyp88997/dsh-browser-service/releases/latest/download/dsh-browser-service.tgz   # B) Release 资产
+dsh plugin --profile web add github:lyp88997/dsh-browser-service                                      # C) 源码（pnpm 现场构建）
+
+# 之后必须重启 DSH（插件模块在 boot 时 import）；再校验组合：
+dsh --profile web --dump-config | grep -E 'browserProvider|patched by|not found'
+```
+
+- 期望：`browserProvider: cdp-daemon`、`patched by dsh-browser-service`；`browser-electron` / `playwright-browser` 两条守卫行打印 `not found`（只装本包时这两个 id 不存在，无害）。
+- **新版本发布不满 24 小时时，pnpm 11 的 `minimumReleaseAge`（默认开）会扣住它，`@latest` 会静默解析成旧版**。活 profile 的 `$DSH_HOME/profiles/web/pnpm-workspace.yaml` 里有一份 `minimumReleaseAgeExclude`（实测现值 `dsh-browser-service@0.4.1 || … || 0.8.1`）：把要装的新版本（如 `0.8.2`）追加进去再装。也可以按精确版本装——pnpm ≥11.1.3 的宽松模式会自动把不成熟版本记进 `minimumReleaseAgeExclude`，或者 `--config.minimumReleaseAge=0` 重试一次。
+- 接缝依赖 `dsh-builtin-browser` 已写进本包 `dependencies`（33 个工具经 `./browser`、`./tool-browser` 转出）⇒ **别再单独 `add dsh-builtin-browser`**（会出现两条 `tool-browser` 行、工具重名）。
+- **别用旧名 `dsh-browser-cdp`**：npm 上同名包是别人的（drscrewdriver 0.17.4）。本包 npm 名就是 `dsh-browser-service`。
+- 插件与 `browsersvc` 必须**同版本**：v0.3.0 起公开端口要 Bearer token，旧插件配新守护进程会 401。升级顺序＝先换插件并重启 DSH，再 `browsersvc restart`。
+- `@latest` 在已装版本仍满足依赖范围时不会升级；要强制升级就写精确版本。
+
+## 3. 半边归属：改了什么要重启，什么刷新即可
+
+| 你改的东西 | 归属 | 生效方式 |
+| --- | --- | --- |
+| `plugin/client.js`（面板界面、外观、几何、设置） | 客户端半边 | **刷新页面**（Ctrl+F5）即可 |
+| `plugin/lib/panel.js`、`liveview.mjs`、`provider.js`、`src/*`、`plugin/lib/index.js` | 宿主半边 | **必须重启 DSH** |
+| 技能正文 `skills/*/SKILL.md` | 提供者现读 | 不用重启（内置提供者每次现读文件） |
+| `cordis.patch.yml` | 组合树 | 完整 web profile 上热重载会**静默回滚**，实际必须重启（见 §7 机制 1） |
+
+- 「自动清理没生效」「面板新功能不见了」这类误报，十有八九就是宿主半边还是旧版：实测旧宿主上 `POST /browser-service/logs` 返回 **405**、`GET` 同路径 **404**（新路由压根没挂）。
+
+## 4. browsersvc CLI 速查
+
+`node <包>/bin/browsersvc.mjs <cmd>`（活 profile 里就是 `…/node_modules/dsh-browser-service/bin/browsersvc.mjs`）
 
 | 命令 | 说明 |
 | --- | --- |
-| `status` | 读状态文件 + 探测公开端口；输出 `running/healthy/port/internalPort/pid/browserPid/kernel/browserVersion/wsEndpoint(带 token)/startedAt/idleMs/logFile` |
-| `start` | 起后台单例（幂等）；成功打印 `{started:true,…}`，失败打印 `{started:false,error,…}` 并 exit 2 |
+| `status` | 读状态文件 + 探测公开端口；输出 `running/healthy/port/internalPort/pid/browserPid/kernel/browserVersion/wsEndpoint(带 token)/startedAt/idleMs/logFile`。健康 exit 0，未运行 exit 1 |
+| `start` | 起后台单例（幂等）；成功打印 `{started:true,…}`，失败 exit 2 |
 | `stop [--force]` | 先做身份校验（`/proc/<pid>/cmdline` 含 `browsersvc.mjs`、内核含 `--remote-debugging-port=<内部端口>`）；不匹配就拒绝且**保留**状态文件，`--force` 才强杀 |
-| `restart` | 停旧起新，输出 `{restarted:true,stopped:true,started:true,…}` |
+| `restart` | 停旧起新，输出 `{restarted:true,stopped:true,started:true,…}`；token 会换新 |
 | `logs [--lines=60]` | 打印日志尾部（`--lines` 必须正整数） |
-| `detect` | 列出探测到的内核候选与解析后的配置 |
-| `ops [--lines=20] [--json]` | **v0.6.0 起**：最近 N 次浏览器操作（动作 / 耗时 ms / 成败 / 错误原因 / 会话+标签），读 `$ROOT/ops.jsonl` |
+| `ops [--lines=20] [--json]` | 最近 N 次浏览器操作（动作 / 耗时 ms / 成败 / 错误原因 / 会话+标签），读 `ops.jsonl` |
 | `console [--lines=40] [--json]` | 控制台输出与 `pageerror`（文本截 500 字），读 `console.jsonl` |
-| `network [--lines=40] [--json]` | 请求两阶段（request/response，带状态码与耗时；`requestfailed` 单独标），读 `network.jsonl`（不记头与体） |
-| `har [--session=s1] [--out=file]` | 会话 HAR（关闭会话时落盘 `$ROOT/har/<时间戳>-<会话>.har`，留最近 10 份）；不带 `--out` 只报路径与字节，带则复制且拒绝覆盖 |
-| `cookies [--url=…] [--json\|--export=file\|--import=file]` | cookie/localStorage 导出注入：走浏览器级 CDP 会话 + 真实 `browserContextId` + `Storage.getCookies/setCookies`（**不依赖 DSH 会话**）；导出文件 0600、拒绝覆盖；`--json` 空也 exit 0 |
+| `network [--lines=40] [--json]` | 请求两阶段（request/response，带状态码与耗时；`requestfailed` 单独标），读 `network.jsonl`（**不记头与体**） |
+| `har [--session=s1] [--out=file]` | 会话 HAR（关闭会话时落盘 `har/<时间戳>-<会话>.har`，留最近 10 份）；不带 `--out` 只报路径与字节，带则复制且拒绝覆盖 |
+| `cookies [--url=…] [--json\|--export=file\|--import=file]` | cookie/localStorage 导出注入：走浏览器级 CDP + 真实 `browserContextId` + `Storage.getCookies/setCookies`（**不依赖 DSH 会话**）；导出文件 0600、拒绝覆盖 |
+| `detect` | 列出探测到的内核候选与解析后的配置 |
 | `run` | 前台跑 supervisor（`start` 内部用它） |
-| `skills [--install] [--force] [--dir=…] [--json]` | **v0.8.1 起**：查看/安装随包全局技能（默认目标 `$DSH_HOME/skills`）。不带 `--install` 只报每个文件的状态（缺失/已最新/可升级/你改过/非本包）与待处理数；`--install` 幂等落盘，被用户改过的副本跳过（`--force` 才覆盖），台账写在目标目录的 `.dsh-browser-service.skills.json` |
+| `skills [--install\|--uninstall] [--force] [--dir=…] [--json]` | 随包技能：查看 / 落盘 / 撤销，见 §5 |
 
-- 参数：`--root`（默认 `$DSH_HOME/browser-service`）、`--port`（默认 9333）、`--idle-ms`（默认 900000，允许 1000..86400000）、`--kernel`、`--wrapper`、`--start-timeout`、`--internal-port-base`、`--user-data-dir`。
-- env：`DSH_BROWSER_SVC_ROOT` / `DSH_BROWSER_SVC_PORT` / `DSH_BROWSER_SVC_IDLE_MS` / `DSH_BROWSER_CHROME` / `DSH_BROWSER_WRAPPER`；也可写 `$ROOT/config.json`。优先级 CLI > env > config.json > 自动探测；非整数/越界会被拒。
-- 内核只会绑 `127.0.0.1`（本机是 host 网络，**别**把 CDP 端口改到 0.0.0.0）。
+- 参数：`--root`（默认 `$DSH_HOME/browser-service`）、`--port`（默认 9333）、`--idle-ms`（CLI 默认 900000，允许 1000..86400000）、`--kernel`、`--wrapper`、`--user-data-dir`、`--start-timeout`、`--internal-port-base`。
+- env：`DSH_BROWSER_SVC_ROOT` / `DSH_BROWSER_SVC_PORT` / `DSH_BROWSER_SVC_IDLE_MS` / `DSH_BROWSER_CHROME` / `DSH_BROWSER_WRAPPER`；也可写 `$ROOT/config.json`。优先级 **CLI > env > config.json > 自动探测**；非整数/越界会被拒（`无效的 port：99999（允许 0..65535）`，exit 2）。
+- 内核只绑 `127.0.0.1`（本机是 host 网络，**别**把 CDP 端口改到 `0.0.0.0`）。
 
-## 运行时状态与门禁（默认 root `/home/node/.dsh/browser-service`）
+## 5. 随包技能与「系统内置」身份
 
-| 项 | 说明 |
+- 技能文件在仓库 `skills/` 里（`browser/SKILL.md`、`browser-runtime/SKILL.md` + 后者的 5 个 `scripts/` 文件，共 7 个）。**v0.8.2 起**由 `src/skill-provider.mjs` 用 `ctx.skills.registerProvider()` 注册成**内置提供者**（候选带 `source:'bundled'` + rank 600、`resourceBase` 指向包内目录、正文现读现剥 frontmatter），技能中心显示**「系统内置」**。
+- **为什么不再默认落盘**：技能发现按「层内 rank 升序」去重，**rank 小的先赢**。落盘进 `$DSH_HOME/skills` 是用户级（rank 400），会**盖住**内置那份（600）⇒ 想显示「系统内置」就不能同时落盘。落盘保留为可选（配置 `syncSkills: true`，`skillsDir` 换目录），只为「DSH 以外的工具也要读这些文件」。
+- 命令：
+  - `browsersvc skills`：只报状态（每个文件：缺失/已最新/可升级/你改过/非本包、待处理数、槽位冲突数），并提示磁盘上有没有会盖住内置的副本。
+  - `browsersvc skills --install [--force] [--dir=…] [--json]`：幂等落盘；被用户改过的副本跳过（`--force` 才覆盖）；台账写在目标目录的 `.dsh-browser-service.skills.json`。
+  - `browsersvc skills --uninstall [--dir=…] [--json]`：只删台账里属于本包且内容没被改过的文件，你改过的保留并说明原因，撤净后连台账与空目录一起清。**从 v0.8.1 落过盘的，跑这个再重启 DSH 就回到「系统内置」。**
+- ⚠️ 直接改 `$DSH_HOME/skills/browser*/SKILL.md`，升级时会被台账识别为「你改过」而跳过——要么把改动提回仓库 `skills/`，要么 `--force` 覆盖（丢弃本地改动）。
+
+## 6. 运行时状态、门禁与自愈
+
+默认 root `$DSH_HOME/browser-service`：
+
+| 路径 | 说明 |
 | --- | --- |
-| 进程 | supervisor（`browsersvc run`）+ 内核；内核 ppid = supervisor。空闲 `idleMs`（默认 15 分钟 = 900000ms）**无客户端连接**时 supervisor **自杀**（正常行为）。⚠️ 0.5.0 起：**最后一个会话关闭后插件主动断开 CDP 连接**，之后 supervisor 才可能按 `idleMs` 空闲自杀（插件自启默认 5 分钟）；下一次调用自动拉起。会话期间不回收（避免每次冷启动 ≈ 3s）；要立刻释放就 `browsersvc stop`（标签页随之清空）。2026-09-28 活证：自启 cmdline 带 `--idle-ms=300000`，关闭会话后实测 ~298s 退出 |
+| 进程 | supervisor（`browsersvc run`）+ 内核（内核 ppid = supervisor）；空闲 `idleMs` 且**无客户端连接**时 supervisor 自杀（正常行为） |
 | `service.json` | 状态 + `token` + `listening`，**0600**；token 每次启动随机生成 |
-| `ops.jsonl` / `console.jsonl` / `network.jsonl` | v0.6.0 起的观测日志（环形上限 1/1/2 MiB，超限保尾部一半；IO 异常一律吞掉不动浏览器调用），0600 |
-| `har/` | 每个会话的 HAR（`<时间戳>-<会话>.har`，留最近 10 份） |
-| `service.log` | supervisor/内核日志 + 代理拒绝记录，0600 |
-| `profile/` | 内核 userDataDir（0600 目录）；cookie 明文 |
+| `ops.jsonl` / `console.jsonl` / `network.jsonl` | 观测日志，环形上限 1/1/2 MiB（超限保尾部一半），0600；IO 异常一律吞掉 |
+| `har/` | 每会话 HAR（`<时间戳>-<会话>.har`，留最近 10 份） |
+| `service.log` | supervisor / 内核日志 + 代理拒绝记录，0600 |
+| `profile/` | 内核 userDataDir（cookie 明文） |
 
-公开端口门禁：必须 `Authorization: Bearer <token>`；只放行 `GET /json/version|/json/list|/json/protocol` 与 `/devtools/*`（`/json/new|close|activate` 一律 403）；`/json/version` 的 `webSocketDebuggerUrl` 被改写成代理地址并附 token，所以调用方绕不开代理；**同一条连接上的后续请求不免检**（只有 CDP WebSocket 保长连接，其余请求按 `connection: close` 转发、响应后即关 —— F27）。
+公开端口门禁：必须 `Authorization: Bearer <token>`；只放行 `GET /json/version|/json/list|/json/protocol` 与 `/devtools/*`（`/json/new|close|activate` 一律 403）；`/json/version` 的 `webSocketDebuggerUrl` 被改写成代理地址并附 token，调用方绕不开代理；**同一条连接上的后续请求不免检**（只有 CDP WebSocket 保长连接，其余请求按 `connection: close` 转发、响应后即关 —— F27）。
 
-## 自愈行为（v0.3.1/v0.3.2 起，别当故障报）
+自愈行为（v0.3.1/v0.3.2 起，**别当故障报**）：
 
-- 守护进程不在时，插件按 `autoStartCommand` **自启一次**（失败不反复拉起）；连接成功过之后开关复位，所以守护进程空闲自杀/崩溃后**还能再自启**。
-- CDP 连接被换掉（守护进程重启、拆线、内核崩溃）后，插件的会话会在新连接上**按原 session id 重建**，工具层的 session id 继续可用。
-- token 在每次 attach 时重新读 `service.json` ⇒ 守护进程换 token 后插件能跟上（冷启动第一次调用也不会 401）。
-- 长连接不再被 10s 的头部超时误杀（代理只在收全请求头之前计时）。
+- 守护进程不在时插件按 `autoStartCommand` 自启一次（失败不反复拉起）；连接成功过之后开关复位，所以空闲自杀/崩溃后还能再自启。
+- CDP 连接被换掉（守护进程重启、拆线、内核崩溃）后，会话在新连接上**按原 session id 重建**，工具层 session id 继续可用。
+- token 每次 attach 重读 `service.json` ⇒ 守护进程换 token 后插件能跟上（冷启动第一次调用也不会 401）。
+- 0.5.0 起最后一个会话关闭后插件**主动断开 CDP**，之后 supervisor 才可能按 `idleMs` 空闲自杀（插件自启默认 5 分钟 = 300000ms）；会话期间不回收（避免每次冷启动约 3s）。要立刻释放就 `browsersvc stop`（标签页随之清空）。
 
-## dsh 侧配置：两条路线
+## 7. dsh 侧配置
 
-- **正常安装（bundle 路线）**：此节不用手改。包自带的 `plugin/cordis.patch.yml` 会插入三条行（`browser-cdp` / `browser` / `tool-browser`），并给 `browser-electron`、`playwright-browser` 加 `disabled: true`。
-- **手写 patch 路线（只用于改本仓库源码时）**：前提是 profile 的 `node_modules/` 能解析到片段里的 `name` —— 改源码就先 `ln -sfn /home/node/DSH/dsh-browser-service $DSH_HOME/profiles/web/node_modules/dsh-browser-service`；片段写在 `$DSH_HOME/profiles/web/cordis.patch.yml` **尾部**。
+- **正常安装（bundle 路线，别手改）**：包自带 `plugin/cordis.patch.yml`，会 insert `browser-cdp` / `browser`（选 `cdp-daemon`）/ `tool-browser` 三行，并给 `browser-electron`、`playwright-browser` 加 `disabled: true`。
+- **手写 patch 路线（只用于改本仓库源码）**：前提是 profile 的 `node_modules/` 能解析到片段里的 `name` —— 先 `ln -sfn /home/node/DSH/dsh-browser-service $DSH_HOME/profiles/web/node_modules/dsh-browser-service`；片段写在 `$DSH_HOME/profiles/web/cordis.patch.yml` **尾部**。
 
 ```yaml
 - insert:
@@ -104,81 +130,117 @@ dsh --profile web --dump-config | grep -E 'browserProvider|patched by|not found'
   disabled: true
 - id: playwright-browser
   disabled: true
-- id: univer
-  config: { browserExecutablePath: /home/node/DSH/.browser/chromium-wrapper.sh }
 ```
 
-插件侧可配键（`dsh-browser-service`；权威定义是 `plugin/lib/index.js` 的 Config，完整表见仓库根 `README.md` 的「配置」节 —— 配置表已从 `plugin/README.md` 上移）：`providerId`、`cdpUrl`、`cdpToken`、`downloadDir`、`connectTimeoutMs`、`autoStartCommand`、`autoStartTimeoutMs`、`actionTimeoutMs`、`navigationTimeoutMs`、`lookupTimeoutMs`、`snapshotMaxElements`、`contentMaxChars`、`viewportWidth`、`viewportHeight`、`captureConsole`/`captureNetwork`（默认都开：是否录控制台与网络；关掉网络捕获就不录 HAR）、`maxTabs`（默认 5，夹 1..50：单会话标签上限，超限报 `BROWSER_TAB_LIMIT`）、`idleMs`（默认 300000＝5 分钟，夹 1000..86400000：自启守护进程的空闲回收窗口，仅默认 `autoStartCommand` 时生效）。`skillsDir`（默认空＝`$DSH_HOME/skills`）与 `syncSkills`（默认 true：插件启动时把随包技能同步过去）。其中 `downloadDir` 未配置时（v0.4.3 起）＝系统 Downloads 目录（`XDG_DOWNLOAD_DIR` → 家目录下存在的 `Downloads`/`下载`/`下載` → `~/Downloads`，首次写入时建目录），截图/下载的 `savePath` 必须落在其中。
+插件侧可配键（权威定义是 `plugin/lib/index.js` 的 `Config`；完整表见仓库根 `README.md` 的「配置」节）：
+
+| 键 | 默认 / 范围 | 作用 |
+| --- | --- | --- |
+| `providerId` | `cdp-daemon` | seam 里注册的 provider id |
+| `cdpUrl` | `http://127.0.0.1:9333` | 守护进程公开端口 |
+| `cdpToken` | 空＝自动读 `service.json` | 手工指定 token（一般不用） |
+| `connectTimeoutMs` / `actionTimeoutMs` / `navigationTimeoutMs` / `lookupTimeoutMs` | 10000 / 30000 / 30000 / 5000 | 各阶段超时 |
+| `autoStartCommand` | 空＝包内 `bin/browsersvc.mjs start` | 自启命令 |
+| `autoStartTimeoutMs` | 60000 | 自启等待 |
+| `snapshotMaxElements` / `contentMaxChars` | 200 / 200000 | 快照元素与内容上限 |
+| `viewportWidth` / `viewportHeight` | **1920 / 1080**（0.8.2 起；0.8.1 及以前 1440×900） | 新会话视口；运行时可被 `setViewport` 改，夹 640×360–3840×2160 |
+| `captureConsole` / `captureNetwork` | `true` / `true` | 是否录控制台/网络；关网络捕获就不录 HAR |
+| `maxTabs` | 5（夹 1..50） | 单会话标签上限，超限 `BROWSER_TAB_LIMIT` |
+| `idleMs` | 300000（夹 1000..86400000） | 自启守护进程的空闲回收窗口，仅默认 `autoStartCommand` 时生效 |
+| `downloadDir` | 空＝系统 Downloads（`XDG_DOWNLOAD_DIR` → `Downloads`/`下载`/`下載` → `~/Downloads`） | 截图/下载 `savePath` 必须落在其中 |
+| `registerSkills` | **true** | 启动时注册内置技能提供者 |
+| `skillsDir` | 空＝`$DSH_HOME/skills` | 落盘目标目录 |
+| `syncSkills` | **false**（0.8.2 起；v0.8.1 是 true） | 可选的落盘同步（落盘是 rank 400，会盖住内置 600） |
 
 ### ⚠️ 两条必知机制（踩过）
 
 1. **热加载只重读 patch 文件，不重读 `dsh.profile.bundles`**（`profile-boot-*.js` 的 `composeLive()` 用 boot 时冻结的 bundle patches）。改 `cordis.patch.yml` 才可能热生效；改 `bundles`、改插件代码、升级插件版本**都必须重启 dsh**（完整 web profile 上 patchReload 热重载会静默回滚，别信）。
-2. **`insert` 不去重**（`dsh-app-boot/lib/index.js`：无 id 的 insert 直接 push）。若 `bundles` 注册了插件、patch 里又 `insert` 同 id，**下次重启会出现两条同 id 条目**。
-   - 现状（本机活 profile，**2026-09-27 起已切 bundle 路线**）：`dsh.profile.bundles` **含** `dsh-browser-service`（`dsh plugin --profile web add dsh-browser-service@latest` 装的 0.4.x）；手写 patch 里的浏览器块已删（`cordis.patch.yml` 只剩 `univer` 一行），`node_modules/dsh-browser-cdp` 软链已删；同时移除了 `dsh-builtin-browser`（改由本包依赖提供）与 `dsh-playwright-browser`。切换前备份：`package.json.bak-pre-bundle`、`cordis.patch.yml.bak-pre-bundle`（回滚见「回滚 / 清理」）。
-   - 插件包自带 `"dsh": {"bundle": {"patch": "./cordis.patch.yml"}}`：若改走 bundle 路线（`dsh plugin add`），必须**同时**从手写 patch 里删掉这段 `insert`。二选一，绝不能同时。
+2. **`insert` 不去重**（无 id 的 insert 直接 push）。若 `bundles` 注册了插件、patch 里又 `insert` 同 id，**下次重启会出现两条同 id 条目**。现状：活 profile 自 2026-09-27 起已切 bundle 路线（`dsh.profile.bundles` 含 `dsh-browser-service`，手写 patch 里的浏览器块已删），`node_modules/dsh-browser-cdp` 软链已删；切换前备份 `package.json.bak-pre-bundle`、`cordis.patch.yml.bak-pre-bundle`。两条路线二选一，绝不能同时。
 
-## 排障表
+## 8. 排障表（症状 → 原因 → 处置）
 
 | 现象 | 根因与处理 |
 | --- | --- |
-| `no usable browser provider is registered` | provider 没进组合树：查 patch 的 `insert`、插件是否在 `profiles/web/node_modules/`、是否需重启 dsh |
-| `browser: 无法连接 CDP 端点 …ECONNREFUSED…；请先运行 browsersvc start` | 守护进程没起且自启失败：`status` → `start`，看 `service.log` 尾部；确认 `autoStartCommand` 路径没写错 |
-| `Unexpected status 401`（attach / curl `/json/version`） | token 不匹配：插件与守护进程升级不同步、或两边 root 不一致。先重启 DSH（插件重读状态文件）再 `browsersvc restart`；或显式配 `cdpToken` |
-| `EACCES: permission denied, open '…/service.log'` | 从受沙箱限制的 shell 调 `browsersvc start`：写 `$DSH_HOME` 需要一次 `danger-full-access` 提权，或干脆让插件自启 |
-| `browser: 会话内没有可用标签页` | 连接被换掉后的旧会话（v0.3.1 起会自愈）。仍报就 `browser_reset_session`，或重启 DSH |
-| `EADDRINUSE … 127.0.0.1:9333` / `no free port from 9300` | 端口被占：`status`/`logs` 找残留实例，或 `--port` / `--internal-port-base` 换端口 |
-| `浏览器内核不存在 / 不可执行` | `--kernel` 指错，或内核没下全（见重建）；包装器必须可执行 |
-| `error while loading shared libraries: libglib-2.0.so.0`（exit 127） | 直接跑了真二进制：必须经 `chromium-wrapper.sh`；或 `libs/` 不全 → 重跑 `setup-libs.sh` |
+| `no usable browser provider is registered` | provider 没进组合树 → 查 patch 的 `insert`、插件是否在 `profiles/web/node_modules/`、是否需要重启 dsh |
+| `browser: 无法连接 CDP 端点 …ECONNREFUSED…；请先运行 browsersvc start` | 守护进程没起且自启失败 → `status` → `start`，看 `service.log` 尾部，确认 `autoStartCommand` 路径 |
+| `Unexpected status 401`（attach 或 `curl /json/version`） | token 不匹配：插件与守护进程升级不同步、或两边 root 不一致 → 先重启 DSH（插件重读状态文件）再 `browsersvc restart`；或显式配 `cdpToken` |
+| `EACCES: permission denied, open '…/service.log'` | 从受沙箱限制的 shell 调 `browsersvc start`：写 `$DSH_HOME` 要一次 `danger-full-access` 提权，或干脆让插件自启 |
+| `EADDRINUSE … 127.0.0.1:9333` / `no free port from 9300` | 端口被占 → `status`/`logs` 找残留实例，或 `--port` / `--internal-port-base` 换端口 |
+| `browser: 会话内没有可用标签页` | 连接被换掉后的旧会话（v0.3.1 起会自愈）→ 仍报就 `browser_reset_session`，或重启 DSH |
+| `BROWSER_TAB_LIMIT`（开第 6 个标签） | 超过 `maxTabs`（默认 5）→ 关掉不用的标签或 `browser_reset`；要更多就调 `maxTabs`（夹 1..50）并重启 DSH |
+| `BROWSER_SCREENSHOT_BLOCKED` / `BROWSER_DOWNLOAD_BLOCKED` | `savePath` 不是绝对路径、要覆盖已有文件、或不在 `downloadDir` 内 → 改路径/换名；要写工作区就显式配 `downloadDir` 并重启 DSH |
+| `BROWSER_VIEWPORT_INVALID` | `POST /browser-service/viewport` 的宽高不是有限正整数（面板一般不会发坏值）→ 传正整数，服务端会夹到 640×360–3840×2160 |
+| 面板路由报 404（例如 `POST /browser-service/logs` 返回 404/405） | 宿主半边是旧版，新路由没挂 → **重启 DSH**；客户端会明说「宿主半边是旧版，重启 DSH 后生效」 |
+| 面板路由报 403（非本机访问 DSH Web） | 实时窗口只对本机回环开放；换到本机浏览器访问，或只用 `browsersvc` CLI 看观测 |
+| `browser: 只允许 http(s) URL` | provider 只接 http(s) → 本地 HTML 起本地 http 服务 |
+| `浏览器内核不存在 / 不可执行` | `--kernel` 指错或内核没下全（见 §12）；包装器必须可执行 |
+| `error while loading shared libraries: libglib-2.0.so.0`（exit 127） | 直接跑了真二进制 → 必须经 `chromium-wrapper.sh`；或 `libs/` 不全，重跑 `setup-libs.sh` |
 | `ldd` 有 `not found` | `LD_LIBRARY_PATH` 必须**两个目录都给**：`libs/usr/lib/x86_64-linux-gnu` **和** `libs/lib/x86_64-linux-gnu` |
 | `FATAL:…zygote_host_impl_linux.cc] No usable sandbox!` | 容器 `NoNewPrivs=1` + seccomp ⇒ 必须 `--no-sandbox`（包装器已带） |
 | 渲染崩溃 / 共享内存错误 | `/dev/shm` 只有 64M ⇒ 必须 `--disable-dev-shm-usage`（包装器已带） |
-| 截图纯白 | 没给 fontconfig ⇒ `FONTCONFIG_FILE=/home/node/DSH/.browser/fonts.conf`（包装器已带） |
+| 截图纯白 | 没给 fontconfig ⇒ `FONTCONFIG_FILE=…/fonts.conf`（包装器已带） |
 | 中文全方块；两张等长不同汉字截图指纹完全相同 | 缺 CJK 字体 ⇒ `setup-libs.sh` 种子加 `fonts-noto-cjk` 重跑 |
-| 重启 dsh 后浏览器又坏 / 出现两条同 id 条目 | `bundles` 与 patch 双注册，见机制 2 |
-| 图片读不出来（`vision engine failed`） | 与浏览器无关：本机 `modlens` 视觉桥 → `npx @liustack/modlens doctor` |
+| 重启 dsh 后浏览器又坏 / 出现两条同 id 条目 | `bundles` 与 patch 双注册，见 §7 机制 2 |
+| `/tmp` 下的预览工装、`verify-*` 临时 root 消失 | `/tmp` 会被清理；验收脚本本来就该自建临时 root（见 §10），工装（如 `/tmp/panel-preview`）没了重跑即可，不是运行时故障 |
+| 图片读不出来（`vision engine failed`） | 与浏览器无关：`npx @liustack/modlens doctor` |
 
-## 改完代码/配置怎么验
+## 9. 面板六条路由与状态码（宿主半边 `plugin/lib/panel.js`）
+
+| 路由 | 方法 | 作用 | 常见状态码 |
+| --- | --- | --- | --- |
+| `/browser-service/panel.json` | GET/HEAD | 只读日志尾巴 + 服务信息块（`no-store`，不含绝对路径，下载目录只回目录名） | 其他方法 405；这一条**不走回环闸**（只读） |
+| `/browser-service/live.jpg?since=N[&quality=&max=&maxh=]` | GET/HEAD | 取最新帧；长轮询最多等 1.5s，没有新帧回 **204** | 无 view 204；无 provider 503；方法 405 |
+| `/browser-service/live.json` | GET/HEAD | 地址栏/标题/推流状态/生效取帧参数 | 无 view 回 **200** `{live:false,reason:"当前没有打开的页面 …"}`；无 provider 503 |
+| `/browser-service/live` | POST/DELETE | 动作 `down/up/move/wheel/text/key/reload/goto`；DELETE 停流 | 非 POST/DELETE **405**；跨站 **403**；无 view 且非 goto **409**；未知动作 **400**；空网址 400；goto 无会话会先 `provider.open('面板地址栏')` 再导航，回 `{ok,url,session,opened:true}` |
+| `/browser-service/logs` | POST | `{action:'clear'\|'trim',kind,keep}` 清/裁观测日志 | 未知 kind **400**；GET **405**；跨站 **403** |
+| `/browser-service/viewport` | POST | `{width,height}` → `provider.setViewport()`，回 `{ok:true,viewport:{width,height,applied},at}` | 非法值 / body 不可解析 **400**；无 provider **503**；非 POST 405；跨站 403 |
+
+- 三道闸：只认回环地址（非本机 **403**「实时窗口只对本机开放」）、方法白名单（**405**）、写路由同源校验（跨站 **403**；没有 `Origin`/`Referer` 的请求放行）。
+- 没有 `webServer` 的宿主不挂这些路由，插件照常工作（provider 不受影响）。
+- 写路由与 `panel.json` 的服务信息块都在宿主半边 ⇒ 改完**必须重启 DSH**；客户端半边（`plugin/client.js`）刷新页面即可。
+
+## 10. 改完代码 / 配置怎么验
 
 ```bash
 cd /home/node/DSH/dsh-browser-service
 node scripts/verify-daemon.mjs     # 守护进程 + CLI：35/35
-node scripts/verify-provider.mjs   # provider：116/116（P7 段 6 项：分辨率初值/新会话沿用/真页面重排/越界夹取/非法值报错）
-node scripts/verify-bundle.mjs     # 组合包/安装（含客户端半边 5c：19 项几何夹取、面板间距、设置规整、胶囊四角与自定偏移、补协议、写路由引用、外观 CSS 变量与颜色规整；第 6 段随包全局技能 8 项 + tarball 技能文件 1 项）：61/61
-node scripts/verify-data.mjs       # 观测面 + 实时窗口（六条路由与三道闸；P5 取帧参数透传/夹取、panel.json 服务信息；P6 日志清理与无会话跳转；P7 分辨率写路由 + 「缺 maxh 不塌到 240」回归）：86/86
+node scripts/verify-provider.mjs   # provider + P7 分辨率 + 随包技能提供者：125 通过 0 失败
+node scripts/verify-bundle.mjs     # 组合包安装 + 客户端半边（5c 24 项）+ 随包技能：70/70
+node scripts/verify-data.mjs       # 观测面 + 实时窗口（六条路由与三道闸）：86 通过 0 失败
 node scripts/verify-matrix.mjs --dsh dsh --smoke   # DSH 版本矩阵：4 个宿主版本 × 12 项
-node /home/node/DSH/dsh-browser-service/bin/browsersvc.mjs status   # running/healthy + wsEndpoint 带 token
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9333/json/version   # 期望 401（无 token 必须被拒）
-ps -eo pid,ppid,args | grep -m1 '[c]hrome-headless-shel[l]'   # 内核 cmdline 全为 .browser/...，ppid=supervisor
+node bin/browsersvc.mjs status     # running/healthy + wsEndpoint 带 token
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9333/json/version   # 期望 401
+ps -eo pid,ppid,args | grep -m1 '[c]hrome-headless-shel[l]'   # 内核 ppid = supervisor
 ```
 
-两套脚本都用隔离 root/端口，不碰运行中的实例（verify-provider 会临时起自己的守护进程）。插件代码改动必须**重启 DSH** 才会进活实例。
+- 四套脚本都用 `/tmp` 下的一次性 root/端口，**别指向 `$DSH_HOME/browser-service`**（脚本会按 pid 收敛实例并 `rmSync` 临时 root）。
+- 验证顺序：改插件代码 → 跑对应 verify → **重启 DSH** 才进活实例；只改客户端半边 → 刷新页面。
 
-## 运行时目录清单（`/home/node/DSH/.browser/`，2026-09-28 清理后实测 389MB）
+## 11. 运行时目录清单（`/home/node/DSH/.browser/`，2026-09-28 清理后实测 389MB）
 
 | 路径 | 作用 | 大小 |
 | --- | --- | --- |
-| `chromium-wrapper.sh` | **启动包装器**：export `LD_LIBRARY_PATH` + `FONTCONFIG_FILE`，`exec` 真二进制并追加 `--no-sandbox --disable-dev-shm-usage` | 1KB |
-| `chromium/chrome-headless-shell` | 稳定符号链接 → `puppeteer/chrome-headless-shell/linux-154.0.8037.57/chrome-headless-shell-linux64/chrome-headless-shell` | — |
+| `chromium-wrapper.sh` | 启动包装器：export `LD_LIBRARY_PATH` + `FONTCONFIG_FILE`，exec 真二进制并追加 `--no-sandbox --disable-dev-shm-usage` | 1KB |
+| `chromium/chrome-headless-shell` | 稳定符号链接 → `puppeteer/…/chrome-headless-shell` | — |
 | `libs/` | 用户态系统库前缀（43 个 .deb 解包，含中文字体） | 126MB |
 | `fonts.conf` | fontconfig：`<dir>`→`libs/usr/share/fonts`，`<cachedir>`→`fontcache` | 小 |
 | `puppeteer/` | `@puppeteer/browsers` 下载的 chrome-headless-shell | 263MB |
-| ~~`moli/`~~ | 早期尝试的 `moli` 浏览器二进制（**本服务不引用**）：2026-09-28 已删（-101MB） | 0 |
-| ~~`profile/`、`daemon-profile/`、`pw/`~~ | 早期运行时的 userDataDir / 验证依赖残留（现役的在 `$DSH_HOME/browser-service/profile`）：2026-09-28 已删（-16.5MB） | 0 |
 | `screenshots/` | 历史截图落盘目录 | 284KB |
-| `setup-libs.sh` | **重建脚本**（apt-get download → dpkg-deb -x，非 root） | 2KB |
+| `setup-libs.sh` | 重建脚本（apt-get download → dpkg-deb -x，非 root） | 2KB |
 | `cordis.patch.yml.a1-backup` | 回到旧 A1 方案（`dsh-playwright-browser`）的 patch 备份 | 4.6KB |
-| `browse.mjs`、`verify-cjk.mjs`、`verify-daemon.mjs` | 逃生舱与验证脚本（本技能 `scripts/` 下有副本） | 小 |
+| `browse.mjs`、`verify-cjk.mjs`、`verify-daemon.mjs` | 逃生舱与验证脚本（包内 `skills/browser-runtime/scripts/` 下有副本） | 小 |
 
-包装器可被覆盖：`DSH_BROWSER_PREFIX` / `DSH_BROWSER_FONTCONF` / `DSH_BROWSER_CHROME`。
-内核 userDataDir 归守护进程管（`$ROOT/profile`，默认 `~/.dsh/browser-service/profile`），不再是 `.browser/profile`。
+- 包装器可被覆盖：`DSH_BROWSER_PREFIX` / `DSH_BROWSER_FONTCONF` / `DSH_BROWSER_CHROME`。
+- 内核 userDataDir 归守护进程管（`$ROOT/profile`，默认 `$DSH_HOME/browser-service/profile`）。
+- `moli/`（早期浏览器）、`profile/`/`daemon-profile/`/`pw/`（早期残留）2026-09-28 已删。
 
-## 重建 / 迁移（无 root）
+## 12. 重建 / 迁移（无 root）
 
 ```bash
 cd /home/node/DSH/.browser
 ./setup-libs.sh                       # 1) 用户态系统库（42–43 包，约 124MB，含中文）
 cd /home/node/.dsh/profiles/web/node_modules/.bin
-./browsers install chrome-headless-shell@stable --path /home/node/DSH/.browser/puppeteer   # 2) 内核（.bin/browsers = @puppeteer/browsers 的 CLI，已核实存在）
+./browsers install chrome-headless-shell@stable --path /home/node/DSH/.browser/puppeteer   # 2) 内核
 ln -sfn /home/node/DSH/.browser/puppeteer/chrome-headless-shell/linux-<版本>/chrome-headless-shell-linux64/chrome-headless-shell \
         /home/node/DSH/.browser/chromium/chrome-headless-shell
 # 3) 校验
@@ -189,41 +251,31 @@ $W/chromium-wrapper.sh --dump-dom https://example.com | grep -o '<title>.*</titl
 node $W/verify-cjk.mjs                                             # 期望「纯汉字截图互不相同」
 ```
 
-`setup-libs.sh` 要点：非 root 走 `apt-get -o Dir::State::Lists=/tmp/aptl/lists -o Dir::Cache=… -o Dir::Cache::archives=… download` + `dpkg-deb -x`；种子含 `libnss3/libgbm1/libglib2.0-0/libX11…` + `fonts-liberation` + **`fonts-noto-cjk`（必需，否则中文是豆腐块）**；`PRUNE_RE` 排除 `libc6/libgcc-s1/libstdc++6` 等，**避免 LD_LIBRARY_PATH 覆盖系统 ABI**。
+`setup-libs.sh` 要点：非 root 走 `apt-get -o Dir::State::Lists=/tmp/aptl/lists -o Dir::Cache=… -o Dir::Cache::archives=… download` + `dpkg-deb -x`；种子含 `libnss3/libgbm1/libglib2.0-0/libX11…` + `fonts-liberation` + **`fonts-noto-cjk`（必需，否则中文是豆腐块）**；`PRUNE_RE` 排除 `libc6/libgcc-s1/libstdc++6` 等，**避免 `LD_LIBRARY_PATH` 覆盖系统 ABI**。
 
-## 回滚 / 清理
+## 13. 回滚 / 清理
 
 ```bash
+# 彻底移除自建 provider
+node /home/node/DSH/dsh-browser-service/bin/browsersvc.mjs stop
+dsh plugin --profile web remove dsh-browser-service
 # 回到旧 A1 方案（dsh-playwright-browser + 用户态内核）
 cp /home/node/DSH/.browser/cordis.patch.yml.a1-backup /home/node/.dsh/profiles/web/cordis.patch.yml
-# 从 bundle 路线退回手写 patch 路线（用 2026-09-27 切换前的备份；两条路线二选一）
+# 从 bundle 路线退回手写 patch 路线（用 2026-09-27 切换前的备份）
 cd /home/node/.dsh/profiles/web
 cp -a package.json.bak-pre-bundle package.json
 cp -a cordis.patch.yml.bak-pre-bundle cordis.patch.yml
 dsh plugin --profile web add dsh-builtin-browser && dsh plugin --profile web add dsh-playwright-browser
 ln -sfn /home/node/DSH/dsh-browser-service node_modules/dsh-browser-service
-
-# 彻底移除自建 provider
-node /home/node/DSH/dsh-browser-service/bin/browsersvc.mjs stop
-dsh plugin --profile web remove dsh-browser-service
 ```
 
 `libs/`、`chromium/`、`chromium-wrapper.sh`、`fonts.conf` 是运行必需；`pw/`（仅验证用）、`univer-probe*.univer` 可删。
 
-## 安全与边界
+## 14. 安全与边界
 
 - 公开端口只绑回环并要求 Bearer token；但同机同 uid 仍能读 `service.json` 拿 token ⇒ token 是防误连/防盗用，**不是**多租户边界。
 - `--no-sandbox` ⇒ 页面以 dsh 进程权限运行；只访问可信站点，别在共享 `profile/` 里登录敏感账号（cookie 明文）。
 - 写 `$DSH_HOME` / `/home/node/DSH/.browser` 超出默认 workspace-write 沙箱 ⇒ 需要一次 `danger-full-access` 提权；且**不能从承载当前会话的进程里重启 dsh 自己**。
-- 版本适配实测边界：启动期会校验接缝导出面（`plugin/lib/compat.js`），不符只打印一句人话并安静退出。已实测矩阵（`scripts/verify-matrix.mjs`，每版本 12 项、含真开 example.com）：**0.1.5-rc.3 / 0.1.7-rc.1 / 0.1.7-rc.2 / 0.1.6-alpha.2 全 12/12**；接缝 `dsh-builtin-browser` 实测面 0.1.22。**并在活实例复核过**（DSH 0.1.5-rc.3 + 本包 0.5.1，2026-09-28）。未复测：更早的 0.1.0-rc.x、macOS / Windows。
-- **网页面板是可选件**（v0.6.0 起）：宿主半边用 `ctx.inject(["webServer"], …)` 挂一条只读 JSON 路由，没有 `webServer` 或 ctx 上没有 `inject` 时只打一行 info 就跳过，**provider 不受影响**（隔离矩阵会把「无 inject 的 ctx」也跑一遍）。挂载要**重启 DSH**；之后只改 `plugin/client.js`（客户端半边）不必重启，刷新页面即可。v0.7.0 起同一个 `plugin/lib/panel.js` 还挂三条**实时窗口路由**（`live.jpg` / `live.json` / `live`），走三道闸：只认回环地址（非本机 403）、方法白名单（405）、`POST`/`DELETE` 要求同源（跨站 403）；面板客户端因此多一个默认打开的「网页」入口，帧流是长轮询（静止页面不产生帧）。v0.8.0 起窗口可拖动/可缩放（右下角手柄）/双击标题栏最大化，位置大小记 localStorage（设置里可关）；入口改成左侧一竖排（网页/操作/控制台/网络/设置）；设置区可调取帧**质量**（10–95）与**最大边**（320–1920 / 240–1200），随 `live.jpg?quality=&max=&maxh=` 下发、服务端越界夹取，**改完不用重启**（下一次取帧生效，响应头 `x-frame-quality` / `x-frame-max` 回执），`live.json` 多一个 `options` 字段、`panel.json` 多一个只读 `service` 块（版本/会话/CDP 地址/下载目录名/标签上限/空闲回收/录制开关/生效取帧参数，**不含绝对路径**）。P6 追加：同一个 `plugin/lib/panel.js` 多挂第**五**条路由 `POST /browser-service/logs`（`{action:'clear'|'trim', kind, keep}`，走同一套闸），清/裁三类观测日志（`src/opslog.mjs` 新增 `clearEntries(kind, {root, keep})`，未知类型抛错）；没有任何会话时 `live.json` 仍回 200 并给可操作提示，地址栏 `goto` 会先 `provider.open('面板地址栏')` 再 `openUrl()`（客户端补 `https://`，空串 400，失败原因显示在地址栏下方）。**这两处都在宿主半边（`panel.js` / `opslog.mjs`）⇒ 必须重启 DSH**；客户端半边的其余改动（胶囊四角、图标、失败提示）刷新页面即可。P7 追加：同一个 `panel.js` 再挂第**六**条路由 `POST /browser-service/viewport`（`{width,height}` → `provider.setViewport()`，夹在 640×360 ~ 3840×2160，对**已打开的每个页面** `page.setViewportSize` 并回 `applied`，之后新建的会话沿用；非法值 400），`panel.json.service.viewport` 回读当前值；设置区因此多「浏览器窗口分辨率」分段，胶囊多「水平/垂直偏移」（默认 15/48）、窗口多「面板间距」（默认 10，同时是 `clampRect` 的边距）与「层级基准」（内联 `z-index`：胶囊 = `zBase`、窗口 = `zBase + 1`）。**「自动清理没生效」的真因就是宿主半边还是旧版**：实测 `POST /browser-service/logs` 返回 405、`GET` 同路径 404（新路由压根没挂）⇒ 必须重启 DSH；客户端也不再静默——清理与自动清理的成功/失败都在窗口顶部出条提示，404/405 会明说「宿主半边是旧版，重启 DSH 后生效」。同批还修掉**画面糊**的真缺陷（用户报「分辨率调了，但画面还是很模糊」）：客户端取帧过去只发 `?quality=&max=`、**没发 `maxh`**，而 `clampInt` 里 `Number(null) === 0` 被当成「给了值」⇒ 高度上限算成下限 **240**；CDP 的 `Page.startScreencast` 是「等比缩到 `max × maxh` 的框里」，于是 1920×1080 的页面被压成 384×240 再由界面放大 ⇒ 糊。现在：`clampInt` 把 `null`/空串一律当**没给**（宿主与客户端同一份语义）、客户端改发 `maxh=最大边`（「最大边」＝长边上限，宽高同时封顶）、默认画质 70 → **85**、默认高度上限 800 → 1200。
-P8 追加（**全在客户端半边 `plugin/client.js`，刷新页面即可，不用重启**）：设置页第一段「窗口外观」＝**边框颜色**（跟随主题 / 无边框 / 蓝紫绿琥珀红青六预设 / 取色器自定 `#rrggbb`，别的值回落主题色——值会进 CSS 变量所以先卡一道）、**背景不透明度**（40/60/80/95/100%，用 `color-mix(in srgb, 主题底色 N%, transparent)`，底色仍随暗/亮主题）、**玻璃效果**（关 / 毛玻璃＝blur(10px) saturate(1.15) / 液态玻璃＝blur(18px) saturate(1.65) + 斜向高光 + 内圈描边光，纯 CSS 近似），窗口与胶囊共用；纯函数 `appearanceStyle(settings, kind)` 算 `--bsp-*` 变量、`borderOf` 规整颜色；**内部分区也跟着透明**（标题栏/左侧入口/底栏/吸顶条用 `--bsp-surface`＝抬升层底色、列表吸顶条与分组标题用 `--bsp-card`＝外壳底色，分隔线 `--bsp-divider` 在自定义边框色时是同色调 45% 的浅色、跟随主题/无边框时保持宿主细线，`无边框` 只去掉最外圈那条）——否则外壳透了里面还是实心，看着就像「只有边框线在变」。设置同时从「即时落盘」改成**草稿 + 显式保存**：改动先按新值预览，点吸顶栏「保存」才写 `localStorage`（成功绿字「✓ 已保存：窗口外观立即生效，刷新页面也保留。」，写失败红字说明原因且草稿保留），未保存时琥珀提示 + 入口/胶囊小圆点，「恢复默认」同样要先保存；设置的写入通道是**补丁**（`onPatch` + 函数式更新），避免同一拍连点两个按钮时后者覆盖前者。验收：`verify-bundle` 50 → **52**（5c 段 17 → 19 项）；provider 116 / data 86 / daemon 35 / 矩阵 4×12 不变。**0.8.1 收口时 bundle 总数已到 61**（再加第 6 段「随包全局技能」8 项与 tarball 技能文件 1 项），其余四套计数不变。
-
-## 随包技能（v0.8.1 起）
-
-- 本技能与姊妹技能 `browser` **随包发布**在仓库 `skills/` 里（`browser/SKILL.md`、`browser-runtime/SKILL.md` + 后者 `scripts/` 的 5 个脚本，共 7 个文件）。
-- 为什么非得落盘：DSH 的技能发现只认磁盘目录（项目 `.dsh/skills`、`$DSH_HOME/skills`、`~/.agents/skills`、宿主 bundled 目录），`package.json` 的 `dsh` 清单里**没有技能位**（`DshManifest` 只有 bundle/profile/client/configTrees/sessionFormatMigration/moduleFallback）⇒ 插件想让"装完就有全局技能"，只能把随包文件写进技能根目录。写的是 `$DSH_HOME/skills`（用户级根，rank 400，仅次于宿主自带 bundled），所以装完对所有工作区生效。
-- 机制（`src/skills.mjs`）：目标不存在→装；与源逐字节相同→记为我们的；与台账里的旧哈希相同→我们的旧版，覆盖升级；**用户改过的 / 同名但不在台账里的→跳过并记一行 warn**，要覆盖得 `browsersvc skills --install --force`。幂等：内容一致时一个字节都不写。
-- 插件启动时自动同步（`apply` 顶部，早于 provider 注册；整段失败只记日志、绝不影响 provider）。关掉用配置 `syncSkills: false`，换目录用 `skillsDir`。
-- 手查/手装：`browsersvc skills`（状态）、`browsersvc skills --install [--force] [--dir=…] [--json]`。改完技能内容后不必重启 DSH 才生效（技能按需读取 + 文件监视）；但**新装**建议重启一次最稳。
-- ⚠️ 你如果在本机直接改 `$DSH_HOME/skills/browser*/SKILL.md`，升级时会被台账识别为"你改过"而跳过——要么把改动提回仓库 `skills/`，要么用 `--force` 覆盖（丢弃本地改动）。
+- 版本适配：启动期由 `plugin/lib/compat.js` 校验接缝导出面，不符只打印一句人话并安静退出。已实测矩阵（每版本 12 项、含真开 example.com）：**0.1.5-rc.3 / 0.1.7-rc.1 / 0.1.7-rc.2 / 0.1.6-alpha.2 全 12/12**；接缝 `dsh-builtin-browser` 实测面 0.1.22。未复测更早的 0.1.0-rc.x 与 macOS / Windows。
+- **网页面板是可选件**：用 `ctx.inject(["webServer"], …)` 挂路由，没有 `webServer` 或 ctx 上没有 `inject` 时只打一行 info 就跳过，**provider 不受影响**。挂载要重启 DSH；之后只改 `plugin/client.js` 不必重启。
+- 随包技能只提供文本与脚本，不新增任何 `browser_*` 工具（工具面恒为 33 个）。

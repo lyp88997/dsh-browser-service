@@ -11,10 +11,14 @@
  *   - 与源逐字节相同       → 不动（记为我们的）
  *   - 与台账里的旧哈希相同 → 是我们的旧版，覆盖（升级）
  *   - 其它（用户改过 / 同名但不在台账里）→ 跳过并说明，除非 force
+ *
+ * `removeSkills()` 是反向操作，同样只动台账里属于我们且内容没被改过的文件（0.8.2 起用于
+ * `browsersvc skills --uninstall`：插件默认改成注册「内置技能提供者」，落盘那份会以
+ * 用户级身份盖住内置身份，所以要能给已经落过盘的用户一条干净退路）。
  */
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -189,6 +193,81 @@ export function syncSkills({ source = SKILLS_SOURCE, root = defaultSkillsRoot(),
       writeFileSync(
         markerPath,
         `${JSON.stringify({ version, previous, generatedAt: new Date().toISOString(), files: next }, null, 2)}\n`,
+        { mode: 0o644 },
+      );
+      out.markerWritten = true;
+    } catch (error) {
+      out.errors.push(`台账写不进 ${markerPath}（${error.message}）`);
+    }
+  }
+  return out;
+}
+
+/** 往上删空目录（不删 root 本身）。 */
+function pruneEmptyDirs(from, root) {
+  let dir = from;
+  const stop = resolve(root);
+  while (dir !== stop && dir.startsWith(stop)) {
+    try {
+      rmdirSync(dir);
+    } catch {
+      return; // ENOTEMPTY / 不存在：到此为止
+    }
+    dir = dirname(dir);
+  }
+}
+
+/**
+ * 反向操作：撤掉本包落盘的技能（`browsersvc skills --uninstall`）。
+ * 只删台账里属于本包、且内容与本包写的那份逐字节相同的文件；用户改过的、或不在台账里的一律保留并说明原因。
+ * @returns {{source:string,root:string,removed:string[],kept:{path:string,reason:string}[],errors:string[],markerRemoved:boolean,markerWritten:boolean}}
+ */
+export function removeSkills({ source = SKILLS_SOURCE, root = defaultSkillsRoot() } = {}) {
+  const out = { source, root, removed: [], kept: [], errors: [], markerRemoved: false, markerWritten: false };
+  const markerPath = join(root, MARKER_NAME);
+  const marker = readMarker(root);
+  const rels = new Set([...Object.keys(marker.files), ...listSkillFiles(source)]);
+  const next = {};
+
+  for (const rel of [...rels].sort()) {
+    const destPath = join(root, rel);
+    const destText = readText(destPath);
+    if (destText === null) continue; // 磁盘上没有，无需处理
+    const owned = marker.files[rel];
+    const destHash = sha256(destText);
+    if (owned === undefined) {
+      out.kept.push({ path: rel, reason: '不是本包装的（不在台账里）' });
+      continue;
+    }
+    if (destHash !== owned) {
+      out.kept.push({ path: rel, reason: `被改过（与本包 ${marker.version ?? '上一版'} 写的那份不一致）` });
+      next[rel] = owned;
+      continue;
+    }
+    try {
+      rmSync(destPath);
+      out.removed.push(rel);
+      pruneEmptyDirs(dirname(destPath), root);
+    } catch (error) {
+      out.errors.push(`${rel}：删不掉 ${destPath}（${error.message}）`);
+      next[rel] = owned;
+    }
+  }
+
+  if (Object.keys(next).length === 0) {
+    if (existsSync(markerPath)) {
+      try {
+        rmSync(markerPath);
+        out.markerRemoved = true;
+      } catch (error) {
+        out.errors.push(`台账删不掉 ${markerPath}（${error.message}）`);
+      }
+    }
+  } else {
+    try {
+      writeFileSync(
+        markerPath,
+        `${JSON.stringify({ version: marker.version ?? PACKAGE_VERSION, previous: marker.version ?? null, generatedAt: new Date().toISOString(), files: next }, null, 2)}\n`,
         { mode: 0o644 },
       );
       out.markerWritten = true;

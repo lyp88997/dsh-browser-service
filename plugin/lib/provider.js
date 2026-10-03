@@ -132,8 +132,8 @@ export function createProvider({ chromium, BrowserError, config, log, autoStart 
     return Math.min(max, Math.max(min, Math.floor(raw)));
   };
   const initialViewport = {
-    width: clampViewport(config.viewportWidth, 1440, VIEWPORT_MIN.width, VIEWPORT_MAX.width),
-    height: clampViewport(config.viewportHeight, 900, VIEWPORT_MIN.height, VIEWPORT_MAX.height),
+    width: clampViewport(config.viewportWidth, 1920, VIEWPORT_MIN.width, VIEWPORT_MAX.width),
+    height: clampViewport(config.viewportHeight, 1080, VIEWPORT_MIN.height, VIEWPORT_MAX.height),
   };
 
   class CdpProvider {
